@@ -399,6 +399,12 @@ export default function ChessTrainer() {
   const [thinking, setThinking] = useState(false);
   const [blunder, setBlunder] = useState<{ reason: string; from: Square; to: Square } | null>(null);
 
+  // Click-to-move: the currently selected friendly square, if any.
+  const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
+
+  // Lichess Opening Explorer — real-world game stats for the current position.
+  const [explorerStats, setExplorerStats] = useState<{ white: number; draws: number; black: number } | null>(null);
+
   const botColor = playerColor === "w" ? "b" : "w";
   const orientation = playerColor === "w" ? "white" : "black";
 
@@ -452,6 +458,41 @@ export default function ChessTrainer() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fen, started, blunder, botColor]);
+
+  // Lichess Opening Explorer — real-world game stats for the current
+  // position. Debounced, abortable, and silent on failure (offline-friendly).
+  useEffect(() => {
+    if (!started) {
+      setExplorerStats(null);
+      return;
+    }
+    const controller = new AbortController();
+    const debounce = setTimeout(() => {
+      const url = `https://explorer.lichess.org/lichess?fen=${encodeURIComponent(fen)}&topGames=0&recentGames=0&moves=0`;
+      fetch(url, { signal: controller.signal })
+        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
+        .then((data) => {
+          setExplorerStats({
+            white: Number(data.white) || 0,
+            draws: Number(data.draws) || 0,
+            black: Number(data.black) || 0,
+          });
+        })
+        .catch(() => {
+          // A stale/aborted request (superseded by a newer position) leaves the
+          // card as-is — the effect for the new position owns it. A genuine
+          // failure (offline, bad status) hides the card instead of showing
+          // stats for the wrong position.
+          if (controller.signal.aborted) return;
+          setExplorerStats(null);
+        });
+    }, 350);
+
+    return () => {
+      clearTimeout(debounce);
+      controller.abort();
+    };
+  }, [fen, started]);
 
   /* ---- Commit a move to the real game ------------------------------ */
   const commitMove = useCallback(
@@ -519,6 +560,48 @@ export default function ChessTrainer() {
       return true;
     },
     [started, blunder, thinking, playerColor, commitMove, openingGuide, opening]
+  );
+
+  // Legal targets for the currently selected square (recomputed whenever the
+  // selection or the position changes; empty when nothing is selected).
+  const selectionTargets = useMemo(() => {
+    if (!selectedSquare) return [];
+    return gameRef.current.moves({ square: selectedSquare, verbose: true });
+  }, [selectedSquare, fen]);
+
+  // Clear any click-to-move selection whenever the position changes (our own
+  // move, the bot's reply, or a restart) so stale hints never linger.
+  useEffect(() => {
+    setSelectedSquare(null);
+  }, [fen]);
+
+  /* ---- Click-to-move: select a piece, then click a legal target ---- */
+  const onSquareClick = useCallback(
+    (square: string) => {
+      if (!started || blunder || thinking) return;
+      const sq = square as Square;
+
+      if (selectedSquare) {
+        if (sq === selectedSquare) {
+          setSelectedSquare(null); // clicking the selected square again deselects
+          return;
+        }
+        const isTarget = selectionTargets.some((m) => m.to === sq);
+        if (isTarget) {
+          onDrop(selectedSquare, sq); // reuse the same validation/blunder-check path as drag-drop
+          setSelectedSquare(null);
+          return;
+        }
+      }
+
+      if (gameRef.current.turn() !== playerColor) {
+        setSelectedSquare(null);
+        return;
+      }
+      const piece = gameRef.current.get(sq);
+      setSelectedSquare(piece && piece.color === playerColor ? sq : null);
+    },
+    [started, blunder, thinking, selectedSquare, selectionTargets, playerColor, onDrop]
   );
 
   const undoAndRetry = () => {
@@ -600,9 +683,43 @@ export default function ChessTrainer() {
       });
     }
 
+    // Layer 4 — click-to-move hints: selected square ring + legal-target dots.
+    // The selected square uses `outline` rather than `boxShadow` because a
+    // hanging piece (Layer 3) drives its `boxShadow` via the ct-beat
+    // animation, which would otherwise overwrite a static appended shadow —
+    // outline is a distinct property so the ring still shows even there.
+    if (selectedSquare) {
+      const prevSel = styles[selectedSquare] || {};
+      styles[selectedSquare] = {
+        ...prevSel,
+        outline: "2px solid rgba(85,204,33,0.55)",
+        outlineOffset: "-2px",
+      };
+
+      selectionTargets.forEach((m) => {
+        const prev = styles[m.to] || {};
+        const isCapture = !!gameRef.current.get(m.to); // enemy piece present on the target square
+        if (isCapture) {
+          styles[m.to] = {
+            ...prev,
+            boxShadow: prev.boxShadow
+              ? `${prev.boxShadow}, inset 0 0 0 4px rgba(85,204,33,0.55)`
+              : "inset 0 0 0 4px rgba(85,204,33,0.55)",
+            borderRadius: "50%",
+          };
+        } else {
+          const dot = "radial-gradient(circle, rgba(85,204,33,0.5) 22%, transparent 24%)";
+          styles[m.to] = {
+            ...prev,
+            background: prev.background ? `${dot}, ${prev.background}` : dot,
+          };
+        }
+      });
+    }
+
     return styles;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fen, showControl, showLast, showAttacks, started, playerColor, botColor]);
+  }, [fen, showControl, showLast, showAttacks, started, playerColor, botColor, selectedSquare, selectionTargets]);
 
   // Opening-guide hint — the book move for the player, while still in book.
   const bookHint = useMemo<BookHint | null>(() => {
@@ -632,6 +749,17 @@ export default function ChessTrainer() {
     }
     return rows;
   }, [history]);
+
+  // Opening Explorer percentages, derived from the raw win/draw/loss counts.
+  const explorerPct = useMemo(() => {
+    if (!explorerStats) return null;
+    const total = explorerStats.white + explorerStats.draws + explorerStats.black;
+    if (total <= 0) return null;
+    const w = Math.round((explorerStats.white / total) * 100);
+    const d = Math.round((explorerStats.draws / total) * 100);
+    const b = Math.max(0, 100 - w - d);
+    return { total, w, d, b };
+  }, [explorerStats]);
 
   const status = gameRef.current.isCheckmate()
     ? "Checkmate"
@@ -691,7 +819,9 @@ export default function ChessTrainer() {
               <Chessboard
                 position={fen}
                 onPieceDrop={onDrop}
+                onSquareClick={onSquareClick}
                 boardOrientation={orientation}
+                animationDuration={200}
                 arePiecesDraggable={
                   started && !blunder && !thinking && gameRef.current.turn() === playerColor
                 }
@@ -903,6 +1033,24 @@ export default function ChessTrainer() {
                 <p className="text-sm leading-relaxed text-slate-300">{coach}</p>
               </div>
             </section>
+
+            {/* Lichess Opening Explorer — real-world stats for this exact position */}
+            {started && explorerPct && (
+              <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 backdrop-blur-xl">
+                <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
+                  <BookOpen className="h-4 w-4 text-slate-400" /> Opening Explorer
+                </h2>
+                <p className="mb-2.5 text-xs text-slate-400">
+                  Played in {explorerPct.total.toLocaleString()} games — White {explorerPct.w}% / Draw{" "}
+                  {explorerPct.d}% / Black {explorerPct.b}%
+                </p>
+                <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                  <div className="h-full bg-slate-100" style={{ width: `${explorerPct.w}%` }} />
+                  <div className="h-full bg-slate-500" style={{ width: `${explorerPct.d}%` }} />
+                  <div className="h-full bg-slate-950" style={{ width: `${explorerPct.b}%` }} />
+                </div>
+              </section>
+            )}
 
             {/* Move history */}
             <section className="flex-1 rounded-2xl border border-slate-800 bg-slate-900/50 p-5 backdrop-blur-xl">
