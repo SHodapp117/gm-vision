@@ -7,9 +7,12 @@ A modern, browser-based React chess training app that visualizes **board control
 ## Features
 
 - **Pre-game setup** — play as White or Black, a bot ELO slider (600–3200), and an opening selector (Ruy Lopez, Sicilian, Queen's Gambit, Caro-Kann, Italian).
-- **Threat Map ("Vision" mode)** — toggle a heatmap showing squares your pieces control (green), squares the opponent controls (red), and contested squares (yellow).
-- **Under-attack indicator** — any of your pieces that is hanging (attacked by a lower-value piece, or undefended) gets a pulsing orange glow.
-- **Blunder correction** — if a move hangs material, the game pauses, a modal explains *why* (e.g. "this leaves your Knight hanging"), and you're forced to undo and try again.
+- **Electric vision layers** — three independently toggleable overlays in high-voltage neon:
+  - **Heatmap** — squares you control (electric green), the opponent controls (hot magenta), and contested squares (electric cyan).
+  - **Threats** — any of your hanging pieces (attacked by a lower-value piece, or undefended) gets a pulsing electric-orange glow.
+  - **Last move** — the from/to squares of the most recent move, ringed in violet.
+- **Best Moves** — one click ranks the position's top three candidate moves and draws them as distinct neon arrows (violet → cyan → amber), with a short reason in the coach panel. (Heuristic for now — see the Stockfish note below.)
+- **Blunder correction, with player override** — if a move hangs material the game pauses and a modal explains *why* (e.g. "this leaves your Knight hanging"). You decide: **Undo & Retry**, or **Play it anyway** — the coach only advises, the player always has the final word.
 - **Coach's feedback** panel, PGN-style move history, and a glassmorphism control panel with a dark-mode-first, Vercel/Linear-inspired aesthetic.
 
 ## Tech stack

@@ -1,9 +1,7 @@
 import React, { useState, useRef, useMemo, useEffect, useCallback } from "react";
-import { Chess } from "chess.js";
+import { Chess, type Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import {
-  Eye,
-  EyeOff,
   Crown,
   Swords,
   RotateCcw,
@@ -14,6 +12,9 @@ import {
   BookOpen,
   MessageSquareText,
   ShieldAlert,
+  Lightbulb,
+  Zap,
+  ChevronRight,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -35,6 +36,18 @@ const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"];
 const PIECE_NAME: Record<string, string> = {
   p: "Pawn", n: "Knight", b: "Bishop", r: "Rook", q: "Queen", k: "King",
 };
+
+/* Electric, high-voltage vision palette (neon over slate squares). */
+const ELECTRIC = {
+  mine: "rgba(0, 255, 156, 0.40)", // electric green — your control
+  enemy: "rgba(255, 42, 109, 0.42)", // hot magenta — enemy control
+  contested: "rgba(0, 224, 255, 0.42)", // electric cyan — contested
+  attackRing: "rgba(255, 138, 0, 1)", // electric orange — under attack
+  lastFill: "rgba(179, 102, 255, 0.30)", // electric violet — last move
+  lastRing: "rgba(179, 102, 255, 0.75)",
+};
+// Distinct neon arrow colors for the top best moves (#1 → #3).
+const BEST_ARROW_COLORS = ["#b026ff", "#00e0ff", "#ffd60a"];
 
 /* ------------------------------------------------------------------ */
 /*  Board-control / attack helpers (geometry, not legal-move based)    */
@@ -140,6 +153,55 @@ function findHangingPieces(game: Chess, color: "w" | "b") {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Best-move suggestion (heuristic — same stub family as the bot).    */
+/*                                                                     */
+/*  Not a real engine eval yet: it scores each legal move by material  */
+/*  won, threats resolved vs. created (via the hanging-piece model),   */
+/*  checks, promotions, and center play. Good enough to coach with;    */
+/*  swap in Stockfish's multipv for a true eval later.                 */
+/* ------------------------------------------------------------------ */
+
+interface RankedMove {
+  from: Square;
+  to: Square;
+  san: string;
+  score: number;
+  captured?: string;
+}
+
+const hangingValue = (g: Chess, color: "w" | "b") =>
+  findHangingPieces(g, color).reduce((sum, h) => sum + PIECE_VALUE[h.type], 0);
+
+function rankPlayerMoves(game: Chess, color: "w" | "b"): RankedMove[] {
+  const before = hangingValue(game, color);
+  return game
+    .moves({ verbose: true })
+    .map((m) => {
+      const clone = new Chess(game.fen());
+      clone.move({ from: m.from, to: m.to, promotion: m.promotion });
+      const after = hangingValue(clone, color);
+      const capture = m.captured ? PIECE_VALUE[m.captured] : 0;
+
+      let score = capture * 3; // reward winning material
+      score += (before - after) * 2.5; // reward defending, punish self-hanging
+      if (m.san.includes("#")) score += 100;
+      else if (m.san.includes("+")) score += 0.6;
+      if (m.promotion) score += 8;
+      if (["d4", "e4", "d5", "e5"].includes(m.to)) score += 0.5;
+
+      return { from: m.from, to: m.to, san: m.san, score, captured: m.captured };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+function moveReason(m: RankedMove): string {
+  if (m.san.includes("#")) return "it's checkmate.";
+  if (m.captured) return `it wins the ${PIECE_NAME[m.captured]}.`;
+  if (m.san.includes("+")) return "it checks and keeps the initiative.";
+  return "it improves your position while keeping everything defended.";
+}
+
+/* ------------------------------------------------------------------ */
 /*  Bot engine — MOCK ASYNC STUB.                                      */
 /*                                                                     */
 /*  Replace the body of getBotMove() with a Stockfish Web Worker:      */
@@ -220,13 +282,16 @@ export default function ChessTrainer() {
   const [opening, setOpening] = useState<keyof typeof OPENINGS>("Ruy Lopez");
   const [started, setStarted] = useState(false);
 
-  // Training visuals
-  const [visionMode, setVisionMode] = useState(true);
+  // Training visuals — three independent vision layers
+  const [showControl, setShowControl] = useState(true); // control heatmap (colors)
+  const [showAttacks, setShowAttacks] = useState(true); // under-attack markers
+  const [showLast, setShowLast] = useState(true); // last-move highlight
+  const [bestMoves, setBestMoves] = useState<RankedMove[]>([]);
 
   // Coach + blunder flow
   const [coach, setCoach] = useState("Configure your session and press Start Training.");
   const [thinking, setThinking] = useState(false);
-  const [blunder, setBlunder] = useState<{ reason: string } | null>(null);
+  const [blunder, setBlunder] = useState<{ reason: string; from: Square; to: Square } | null>(null);
 
   const botColor = playerColor === "w" ? "b" : "w";
   const orientation = playerColor === "w" ? "white" : "black";
@@ -234,6 +299,7 @@ export default function ChessTrainer() {
   const syncState = useCallback(() => {
     setFen(gameRef.current.fen());
     setHistory(gameRef.current.history());
+    setBestMoves([]); // stale once the position changes
   }, []);
 
   /* ---- Start / restart --------------------------------------------- */
@@ -243,7 +309,7 @@ export default function ChessTrainer() {
     setThinking(false);
     setStarted(true);
     setCoach(
-      `Playing the ${opening} as ${playerColor === "w" ? "White" : "Black"}. Bot rated ${elo}. Watch the Vision map — control the center.`
+      `Playing the ${opening} as ${playerColor === "w" ? "White" : "Black"}. Bot rated ${elo}. Toggle the Vision layers, and hit Best Moves whenever you're stuck.`
     );
     syncState();
   }, [opening, playerColor, elo, syncState]);
@@ -279,17 +345,30 @@ export default function ChessTrainer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fen, started, blunder, botColor]);
 
+  /* ---- Commit a move to the real game ------------------------------ */
+  const commitMove = useCallback(
+    (from: Square, to: Square) => {
+      const mv = gameRef.current.move({ from, to, promotion: "q" });
+      syncState();
+      return mv;
+    },
+    [syncState]
+  );
+
   /* ---- User move + blunder correction ------------------------------ */
   const onDrop = useCallback(
     (sourceSquare: string, targetSquare: string) => {
       if (!started || blunder || thinking) return false;
       if (gameRef.current.turn() !== playerColor) return false;
 
+      const from = sourceSquare as Square;
+      const to = targetSquare as Square;
+
       // Validate on a clone first so an illegal move never mutates state.
       const clone = new Chess(gameRef.current.fen());
       let result;
       try {
-        result = clone.move({ from: sourceSquare, to: targetSquare, promotion: "q" });
+        result = clone.move({ from, to, promotion: "q" });
       } catch {
         return false; // illegal move
       }
@@ -308,14 +387,14 @@ export default function ChessTrainer() {
               seriousHang.minAttacker < PIECE_VALUE[seriousHang.type] ? "lower-value piece" : "piece"
             } and ${seriousHang.defended ? "under-defended" : "completely undefended"}.`
           : "This drops the evaluation. There's a stronger, safer continuation here.";
-        setBlunder({ reason });
-        setCoach("Move blocked by your coach — review the warning and try a different idea.");
-        return false; // snap the piece back; move never commits
+        // Pause and let the player decide — undo, or override the coach.
+        setBlunder({ reason, from, to });
+        setCoach("Coach flagged this move. Undo and rethink, or override and play it anyway — your call.");
+        return false; // don't commit yet; the modal decides
       }
 
       // Commit the good move.
-      gameRef.current.move({ from: sourceSquare, to: targetSquare, promotion: "q" });
-      syncState();
+      commitMove(from, to);
       setCoach(
         result.captured
           ? `Nice — you won a ${PIECE_NAME[result.captured]}. Keep your pieces coordinated.`
@@ -323,7 +402,7 @@ export default function ChessTrainer() {
       );
       return true;
     },
-    [started, blunder, thinking, playerColor, syncState]
+    [started, blunder, thinking, playerColor, commitMove]
   );
 
   const undoAndRetry = () => {
@@ -331,50 +410,95 @@ export default function ChessTrainer() {
     setCoach("Good — reassess the position. Find a move that keeps every piece defended.");
   };
 
-  /* ---- Threat-map + under-attack square styles --------------------- */
+  // Player overrides the coach and plays the flagged move anyway.
+  const playAnyway = () => {
+    if (!blunder) return;
+    const { from, to } = blunder;
+    setBlunder(null);
+    const mv = commitMove(from, to);
+    setCoach(
+      mv?.captured
+        ? `Override accepted — you grabbed the ${PIECE_NAME[mv.captured]}. Bold; let's see if it holds up.`
+        : "Override accepted — you played through the warning. Own the plan; the bot is thinking…"
+    );
+  };
+
+  // Compute + show (or hide) the top best moves as arrows and coach text.
+  const toggleBestMoves = () => {
+    if (bestMoves.length) {
+      setBestMoves([]);
+      return;
+    }
+    if (!started || blunder || thinking) return;
+    if (gameRef.current.turn() !== playerColor || gameRef.current.isGameOver()) return;
+    const ranked = rankPlayerMoves(gameRef.current, playerColor).slice(0, 3);
+    setBestMoves(ranked);
+    if (ranked.length) {
+      const top = ranked[0];
+      setCoach(
+        `Top candidates: ${ranked.map((r) => r.san).join(", ")}. I'd play ${top.san} — ${moveReason(top)}`
+      );
+    }
+  };
+
+  /* ---- Vision layers → per-square styles ---------------------------- */
   const squareStyles = useMemo(() => {
     if (!started) return {};
     const styles: Record<string, React.CSSProperties> = {};
 
-    if (visionMode) {
+    // Layer 1 — control heatmap (electric colors).
+    if (showControl) {
       const playerMap = buildAttackMap(gameRef.current, playerColor);
       const oppMap = buildAttackMap(gameRef.current, botColor);
       const all = new Set([...Object.keys(playerMap), ...Object.keys(oppMap)]);
       all.forEach((sq) => {
         const p = !!playerMap[sq];
         const o = !!oppMap[sq];
-        if (p && o) styles[sq] = { background: "rgba(234,179,8,0.20)" };
-        else if (o) styles[sq] = { background: "rgba(239,68,68,0.20)" };
-        else if (p) styles[sq] = { background: "rgba(34,197,94,0.18)" };
+        if (p && o) styles[sq] = { background: ELECTRIC.contested };
+        else if (o) styles[sq] = { background: ELECTRIC.enemy };
+        else if (p) styles[sq] = { background: ELECTRIC.mine };
       });
     }
 
-    // Last-move highlight (from + to squares), layered under the attack glow.
-    const verbose = gameRef.current.history({ verbose: true });
-    const last = verbose[verbose.length - 1];
-    if (last) {
-      [last.from, last.to].forEach((sq) => {
-        styles[sq] = {
-          ...(styles[sq] || {}),
-          background: styles[sq]?.background ?? "rgba(129,140,248,0.16)",
-          boxShadow: "inset 0 0 0 2px rgba(129,140,248,0.55)",
+    // Layer 2 — last-move highlight (from + to), under the attack glow.
+    if (showLast) {
+      const verbose = gameRef.current.history({ verbose: true });
+      const last = verbose[verbose.length - 1];
+      if (last) {
+        [last.from, last.to].forEach((sq) => {
+          styles[sq] = {
+            ...(styles[sq] || {}),
+            background: styles[sq]?.background ?? ELECTRIC.lastFill,
+            boxShadow: `inset 0 0 0 2px ${ELECTRIC.lastRing}`,
+          };
+        });
+      }
+    }
+
+    // Layer 3 — under-attack glow on the player's own hanging pieces (wins).
+    if (showAttacks) {
+      findHangingPieces(gameRef.current, playerColor).forEach((h) => {
+        styles[h.square] = {
+          ...(styles[h.square] || {}),
+          boxShadow: `inset 0 0 0 3px ${ELECTRIC.attackRing}`,
+          animation: "ct-pulse 1.4s ease-in-out infinite",
+          borderRadius: "4px",
         };
       });
     }
 
-    // Under-attack glow on the player's own hanging pieces.
-    findHangingPieces(gameRef.current, playerColor).forEach((h) => {
-      styles[h.square] = {
-        ...(styles[h.square] || {}),
-        boxShadow: "inset 0 0 0 3px rgba(249,115,22,0.9)",
-        animation: "ct-pulse 1.4s ease-in-out infinite",
-        borderRadius: "4px",
-      };
-    });
-
     return styles;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fen, visionMode, started, playerColor, botColor]);
+  }, [fen, showControl, showLast, showAttacks, started, playerColor, botColor]);
+
+  // Best-move suggestions → neon arrows on the board.
+  const bestArrows = useMemo(
+    () =>
+      bestMoves
+        .slice(0, 3)
+        .map((m, i) => [m.from, m.to, BEST_ARROW_COLORS[i]] as [Square, Square, string]),
+    [bestMoves]
+  );
 
   /* ---- Derived UI data --------------------------------------------- */
   const pairedHistory = useMemo(() => {
@@ -405,8 +529,8 @@ export default function ChessTrainer() {
       {/* keyframes for the under-attack pulse */}
       <style>{`
         @keyframes ct-pulse {
-          0%, 100% { box-shadow: inset 0 0 0 3px rgba(249,115,22,0.35); }
-          50%      { box-shadow: inset 0 0 0 4px rgba(249,115,22,1); }
+          0%, 100% { box-shadow: inset 0 0 0 3px rgba(255,138,0,0.45); }
+          50%      { box-shadow: inset 0 0 0 4px rgba(255,138,0,1); }
         }
       `}</style>
 
@@ -445,27 +569,49 @@ export default function ChessTrainer() {
                   started && !blunder && !thinking && gameRef.current.turn() === playerColor
                 }
                 customSquareStyles={squareStyles}
+                customArrows={bestArrows}
+                customArrowColor="#b026ff"
                 customBoardStyle={{ borderRadius: "12px", boxShadow: "0 8px 30px rgba(0,0,0,0.4)" }}
-                customDarkSquareStyle={{ backgroundColor: "#334155" }}
-                customLightSquareStyle={{ backgroundColor: "#cbd5e1" }}
+                customDarkSquareStyle={{ backgroundColor: "#1e293b" }}
+                customLightSquareStyle={{ backgroundColor: "#c3ccda" }}
               />
             </div>
 
-            {/* Vision legend */}
-            {started && visionMode && (
-              <div className="mt-4 flex flex-wrap items-center justify-center gap-4 text-xs text-slate-400">
-                <span className="flex items-center gap-1.5">
-                  <span className="h-3 w-3 rounded-sm bg-emerald-500/50" /> Your control
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="h-3 w-3 rounded-sm bg-red-500/50" /> Enemy control
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="h-3 w-3 rounded-sm bg-yellow-500/50" /> Contested
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="h-3 w-3 rounded-sm ring-2 ring-orange-500" /> Under attack
-                </span>
+            {/* Vision legend — mirrors the active layers */}
+            {started && (showControl || showAttacks || showLast || bestMoves.length > 0) && (
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs text-slate-400">
+                {showControl && (
+                  <>
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-3 w-3 rounded-sm" style={{ background: ELECTRIC.mine }} /> Your control
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-3 w-3 rounded-sm" style={{ background: ELECTRIC.enemy }} /> Enemy control
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-3 w-3 rounded-sm" style={{ background: ELECTRIC.contested }} /> Contested
+                    </span>
+                  </>
+                )}
+                {showAttacks && (
+                  <span className="flex items-center gap-1.5">
+                    <span
+                      className="h-3 w-3 rounded-sm"
+                      style={{ boxShadow: `inset 0 0 0 2px ${ELECTRIC.attackRing}` }}
+                    />{" "}
+                    Under attack
+                  </span>
+                )}
+                {showLast && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded-sm" style={{ background: ELECTRIC.lastFill }} /> Last move
+                  </span>
+                )}
+                {bestMoves.length > 0 && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded-sm" style={{ background: BEST_ARROW_COLORS[0] }} /> Best move
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -529,23 +675,54 @@ export default function ChessTrainer() {
                 ))}
               </select>
 
-              <div className="flex gap-2">
+              <button
+                onClick={startGame}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-emerald-400 to-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 active:scale-[0.98]"
+              >
+                <Play className="h-4 w-4" /> {started ? "Restart" : "Start Training"}
+              </button>
+
+              {/* Vision layers */}
+              <div className="mt-4 border-t border-slate-800 pt-4">
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-400">
+                  <Zap className="h-3.5 w-3.5 text-cyan-300" /> Vision Layers
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      { on: showControl, set: setShowControl, label: "Heatmap", dot: "linear-gradient(90deg,#00ff9c,#00e0ff)", ring: "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" },
+                      { on: showAttacks, set: setShowAttacks, label: "Threats", dot: "#ff8a00", ring: "border-orange-400/50 bg-orange-400/10 text-orange-200" },
+                      { on: showLast, set: setShowLast, label: "Last move", dot: "#b366ff", ring: "border-violet-400/50 bg-violet-400/10 text-violet-200" },
+                    ] as const
+                  ).map((t) => (
+                    <button
+                      key={t.label}
+                      onClick={() => t.set((v) => !v)}
+                      aria-pressed={t.on}
+                      className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-xs font-medium transition-all ${
+                        t.on ? t.ring : "border-slate-800 bg-slate-800/40 text-slate-500 hover:border-slate-700"
+                      }`}
+                    >
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full transition-all"
+                        style={{ background: t.on ? t.dot : "#475569" }}
+                      />
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+
                 <button
-                  onClick={startGame}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-emerald-400 to-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 active:scale-[0.98]"
-                >
-                  <Play className="h-4 w-4" /> {started ? "Restart" : "Start Training"}
-                </button>
-                <button
-                  onClick={() => setVisionMode((v) => !v)}
-                  title="Toggle Vision"
-                  className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-all ${
-                    visionMode
-                      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
-                      : "border-slate-800 bg-slate-800/40 text-slate-400 hover:border-slate-700"
+                  onClick={toggleBestMoves}
+                  disabled={!started || !!blunder}
+                  className={`mt-2 flex w-full items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-40 ${
+                    bestMoves.length
+                      ? "border-violet-400/60 bg-violet-500/15 text-violet-200"
+                      : "border-slate-700 bg-slate-800/50 text-slate-200 hover:border-violet-500/40 hover:bg-violet-500/10"
                   }`}
                 >
-                  {visionMode ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                  <Lightbulb className="h-4 w-4" />
+                  {bestMoves.length ? "Hide Best Moves" : "Show Best Moves"}
                 </button>
               </div>
             </section>
@@ -605,12 +782,23 @@ export default function ChessTrainer() {
               <p className="text-sm leading-relaxed text-slate-200">{blunder.reason}</p>
             </div>
 
-            <button
-              onClick={undoAndRetry}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-orange-400 to-orange-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition-all hover:brightness-110 active:scale-[0.98]"
-            >
-              <RotateCcw className="h-4 w-4" /> Undo &amp; Try Again
-            </button>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row">
+              <button
+                onClick={playAnyway}
+                className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2.5 text-sm font-medium text-slate-300 transition-all hover:border-slate-600 hover:text-slate-100 active:scale-[0.98]"
+              >
+                Play it anyway <ChevronRight className="h-4 w-4" />
+              </button>
+              <button
+                onClick={undoAndRetry}
+                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-orange-400 to-orange-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition-all hover:brightness-110 active:scale-[0.98]"
+              >
+                <RotateCcw className="h-4 w-4" /> Undo &amp; Retry
+              </button>
+            </div>
+            <p className="mt-3 text-center text-[11px] text-slate-500">
+              You're the player — the coach only advises.
+            </p>
           </div>
         </div>
       )}
