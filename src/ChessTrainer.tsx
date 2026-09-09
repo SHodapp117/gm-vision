@@ -55,30 +55,52 @@ const ELECTRIC = {
   lastFill: "rgba(179, 102, 255, 0.30)", // electric violet — last move
   lastRing: "rgba(179, 102, 255, 0.75)",
 };
-// Distinct neon arrow colors for the top best moves (#1 → #3).
-const BEST_ARROW_COLORS = ["#b026ff", "#00e0ff", "#ffd60a"];
-
 /* ------------------------------------------------------------------ */
-/*  Control-heatmap color theory.                                      */
+/*  Team color theory — side-based brand palettes.                     */
 /*                                                                     */
-/*  Each piece type owns a signature HUE, spread around the wheel for  */
-/*  contrast yet kept at one saturation/lightness band so they read as */
-/*  a family. A controlled square is tinted by its *dominant* (lowest- */
-/*  value) attacker — the piece that tactically owns it:               */
-/*    • HUE       = that piece's type                                  */
-/*    • LIGHTNESS = side  (bright = you, deep = enemy)                 */
-/*    • ALPHA     = control density (how many attackers) → vibrancy    */
-/*  A true value-tie between sides is a standoff → neutral silver.     */
+/*  YOU always play in a cool Pacific-NW ramp; the BOT always plays in */
+/*  a warm cyberpunk ramp. Within a side, piece type is placed along   */
+/*  that side's 3-color ramp (pawn → king), so you still read WHICH    */
+/*  piece controls a square while side identity is instant (cool vs    */
+/*  warm). Opacity encodes control density (more attackers → vivid).   */
+/*  A value-tie between sides is a standoff → neutral silver.          */
 /* ------------------------------------------------------------------ */
 
-const PIECE_HUE: Record<string, number> = {
-  p: 150, // pawn   — spring green
-  n: 205, // knight — azure
-  b: 272, // bishop — violet
-  r: 18, // rook   — red-orange
-  q: 320, // queen  — magenta
-  k: 45, // king   — amber
+// Ramps ordered for a smooth sweep across the provided brand colors.
+const PLAYER_RAMP = ["#55cc21", "#7cd3d3", "#3151bf"]; // Rave Green → Heritage Aqua → Pacific Blue
+const ENEMY_RAMP = ["#ff3503", "#ad0afe", "#0691db"]; // Electric Orange → Neon Purple → Electric Blue
+const PIECE_ORDER = ["p", "n", "b", "r", "q", "k"]; // ramp position, cheapest → richest
+
+const hexToRgb = (hex: string): [number, number, number] => {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 };
+
+/** Sample a multi-stop color ramp at t ∈ [0,1]. */
+function rampRgb(ramp: string[], t: number): [number, number, number] {
+  const seg = Math.max(0, Math.min(1, t)) * (ramp.length - 1);
+  const i = Math.min(ramp.length - 2, Math.floor(seg));
+  const f = seg - i;
+  const a = hexToRgb(ramp[i]);
+  const b = hexToRgb(ramp[i + 1]);
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * f),
+    Math.round(a[1] + (b[1] - a[1]) * f),
+    Math.round(a[2] + (b[2] - a[2]) * f),
+  ];
+}
+
+/** Brand color for a piece on a given side, at an opacity. */
+function pieceColor(side: "you" | "enemy", type: string, alpha = 1): string {
+  const t = Math.max(0, PIECE_ORDER.indexOf(type)) / (PIECE_ORDER.length - 1);
+  const [r, g, b] = rampRgb(side === "you" ? PLAYER_RAMP : ENEMY_RAMP, t);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// Suggestion arrows (always the player's moves) use the player ramp;
+// best-move rank is encoded by opacity so same-piece candidates stay distinct.
+const BEST_ARROW_ALPHA = [0.95, 0.7, 0.5];
+const arrowColor = (pieceType: string, alpha = 1) => pieceColor("you", pieceType, alpha);
 
 const lowestValueType = (types: string[]): string =>
   types.reduce((best, t) => (PIECE_VALUE[t] < PIECE_VALUE[best] ? t : best), types[0]);
@@ -90,18 +112,15 @@ function controlColor(yourTypes: string[] | undefined, enemyTypes: string[] | un
   const density = yours.length + enemies.length;
   if (density === 0) return null;
 
-  const alpha = Math.min(0.66, 0.28 + 0.11 * (density - 1)); // vibrancy ← density
+  const alpha = Math.min(0.72, 0.32 + 0.11 * (density - 1)); // vibrancy ← density
   const yourMinType = yours.length ? lowestValueType(yours) : null;
   const enemyMinType = enemies.length ? lowestValueType(enemies) : null;
   const yourMin = yourMinType ? PIECE_VALUE[yourMinType] : Infinity;
   const enemyMin = enemyMinType ? PIECE_VALUE[enemyMinType] : Infinity;
 
-  if (yourMin === enemyMin) return `hsla(200, 16%, 82%, ${alpha})`; // standoff — silver
-
+  if (yourMin === enemyMin) return `rgba(203, 213, 225, ${alpha})`; // standoff — silver
   const you = yourMin < enemyMin;
-  const type = (you ? yourMinType : enemyMinType) as string;
-  const light = you ? 62 : 44; // side tone: bright vs deep
-  return `hsla(${PIECE_HUE[type]}, 92%, ${light}%, ${alpha})`;
+  return pieceColor(you ? "you" : "enemy", (you ? yourMinType : enemyMinType) as string, alpha);
 }
 
 /* ------------------------------------------------------------------ */
@@ -222,6 +241,7 @@ interface RankedMove {
   san: string;
   score: number;
   captured?: string;
+  piece: string; // moving piece type — drives the arrow hue
 }
 
 const hangingValue = (g: Chess, color: "w" | "b") =>
@@ -244,7 +264,7 @@ function rankPlayerMoves(game: Chess, color: "w" | "b"): RankedMove[] {
       if (m.promotion) score += 8;
       if (["d4", "e4", "d5", "e5"].includes(m.to)) score += 0.5;
 
-      return { from: m.from, to: m.to, san: m.san, score, captured: m.captured };
+      return { from: m.from, to: m.to, san: m.san, score, captured: m.captured, piece: m.piece };
     })
     .sort((a, b) => b.score - a.score);
 }
@@ -264,6 +284,7 @@ interface BookHint {
   from: Square;
   to: Square;
   san: string;
+  piece: string; // moving piece type — drives the arrow hue
 }
 
 /** The next book move, but only while the game is still ON the main line. */
@@ -277,7 +298,7 @@ function nextBookMove(game: Chess, openingName: string): BookHint | null {
   }
   const san = line[history.length];
   const mv = game.moves({ verbose: true }).find((m) => m.san === san);
-  return mv ? { from: mv.from, to: mv.to, san } : null;
+  return mv ? { from: mv.from, to: mv.to, san, piece: mv.piece } : null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -390,7 +411,7 @@ export default function ChessTrainer() {
     setStarted(true);
     setCoach(
       `Playing the ${opening} as ${playerColor === "w" ? "White" : "Black"}. Bot rated ${elo}.${
-        openingGuide ? " Follow the green arrow to learn the main line." : " Best Moves and the Vision layers are one click away."
+        openingGuide ? " Follow the book arrow to learn the main line." : " Best Moves and the Vision layers are one click away."
       }`
     );
     syncState();
@@ -565,7 +586,7 @@ export default function ChessTrainer() {
     // Layer 3 — under-attack glow, pulsing in the hanging piece's own hue (wins).
     if (showAttacks) {
       findHangingPieces(gameRef.current, playerColor).forEach((h) => {
-        const ring = `hsl(${PIECE_HUE[h.type]}, 95%, 55%)`;
+        const ring = pieceColor("you", h.type, 1); // your hanging piece, your palette
         styles[h.square] = {
           ...(styles[h.square] || {}),
           ["--atk" as string]: ring, // drives the ct-pulse keyframe
@@ -589,12 +610,14 @@ export default function ChessTrainer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fen, started, blunder, openingGuide, playerColor, opening]);
 
-  // Board arrows: opening-guide move (emerald) + best-move suggestions (neon).
+  // Board arrows, unified to the piece-hue language: every arrow is colored by
+  // its moving piece. Best-move rank is encoded by opacity; the book move is
+  // drawn at full strength.
   const arrows = useMemo(() => {
     const list: [Square, Square, string][] = bestMoves
       .slice(0, 3)
-      .map((m, i) => [m.from, m.to, BEST_ARROW_COLORS[i]]);
-    if (bookHint) list.unshift([bookHint.from, bookHint.to, "#00ffa0"]);
+      .map((m, i) => [m.from, m.to, arrowColor(m.piece, BEST_ARROW_ALPHA[i])]);
+    if (bookHint) list.unshift([bookHint.from, bookHint.to, arrowColor(bookHint.piece)]);
     return list;
   }, [bestMoves, bookHint]);
 
@@ -668,7 +691,7 @@ export default function ChessTrainer() {
                 }
                 customSquareStyles={squareStyles}
                 customArrows={arrows}
-                customArrowColor="#b026ff"
+                customArrowColor="hsl(200, 16%, 66%)"
                 customBoardStyle={{ borderRadius: "12px", boxShadow: "0 8px 30px rgba(0,0,0,0.4)" }}
                 customDarkSquareStyle={{ backgroundColor: "#1e293b" }}
                 customLightSquareStyle={{ backgroundColor: "#c3ccda" }}
@@ -678,24 +701,22 @@ export default function ChessTrainer() {
             {/* Vision legend — mirrors the active layers */}
             {started && (showControl || showAttacks || showLast || bestMoves.length > 0 || bookHint) && (
               <div className="mt-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs text-slate-400">
-                {bookHint && (
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-3 w-3 rounded-sm" style={{ background: "#00ffa0" }} /> Book move
-                  </span>
-                )}
                 {showControl && (
-                  <span className="flex items-center gap-2">
-                    <span className="text-slate-500">Control by</span>
-                    {(["p", "n", "b", "r", "q", "k"] as const).map((t) => (
-                      <span key={t} className="flex items-center gap-1" title={PIECE_NAME[t]}>
-                        <span
-                          className="h-3 w-3 rounded-sm"
-                          style={{ background: `hsla(${PIECE_HUE[t]}, 92%, 58%, 0.95)` }}
-                        />
-                        <span className="uppercase tracking-wide text-slate-500">{t}</span>
+                  <span className="flex items-center gap-3">
+                    {(["you", "enemy"] as const).map((side) => (
+                      <span key={side} className="flex items-center gap-1">
+                        <span className="text-slate-500">{side === "you" ? "You" : "Bot"}</span>
+                        {PIECE_ORDER.map((t) => (
+                          <span
+                            key={t}
+                            title={`${side === "you" ? "Your" : "Bot"} ${PIECE_NAME[t]}`}
+                            className="h-3 w-3 rounded-sm"
+                            style={{ background: pieceColor(side, t, 0.95) }}
+                          />
+                        ))}
                       </span>
                     ))}
-                    <span className="text-slate-500">· bright = you · deep = enemy · brighter = more attackers</span>
+                    <span className="text-slate-500">P→K · brighter = more attackers</span>
                   </span>
                 )}
                 {showAttacks && (
@@ -704,7 +725,7 @@ export default function ChessTrainer() {
                       className="h-3 w-3 rounded-sm"
                       style={{ boxShadow: "inset 0 0 0 2px hsl(0,0%,80%)" }}
                     />{" "}
-                    Under attack (pulses in the piece's hue)
+                    Under attack (pulses in the piece's color)
                   </span>
                 )}
                 {showLast && (
@@ -712,9 +733,11 @@ export default function ChessTrainer() {
                     <span className="h-3 w-3 rounded-sm" style={{ background: ELECTRIC.lastFill }} /> Last move
                   </span>
                 )}
-                {bestMoves.length > 0 && (
+                {(bookHint || bestMoves.length > 0) && (
                   <span className="flex items-center gap-1.5">
-                    <span className="h-3 w-3 rounded-sm" style={{ background: BEST_ARROW_COLORS[0] }} /> Best move
+                    <span className="text-sm leading-none text-slate-400">➜</span>
+                    Suggested move — arrow in the moving piece's color
+                    {bestMoves.length > 0 ? " (brighter = higher-ranked)" : ""}
                   </span>
                 )}
               </div>
