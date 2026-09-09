@@ -6,7 +6,8 @@ A modern, browser-based React chess training app that visualizes **board control
 
 ## Features
 
-- **Pre-game setup** — play as White or Black, a bot ELO slider (600–3200), and an opening selector (Ruy Lopez, Sicilian, Queen's Gambit, Caro-Kann, Italian).
+- **Pre-game setup** — play as White or Black, a bot ELO slider (600–3200), and a 15-opening selector (Ruy Lopez, Italian, Scotch, Vienna, Sicilian Najdorf, French, Caro-Kann, Scandinavian, Pirc, Queen's Gambit Declined, Slav, King's Indian, Nimzo-Indian, London, English). Every main line is validated move-by-move against chess.js.
+- **Opening Guide** — a toggle that walks *you* through the chosen opening: while you're still on the main line, a green arrow shows your book move (for either color), a banner names it, and the coach tells you when you follow it — or which move you missed when you leave book. The bot follows the same lines, so you can rehearse a full opening against it.
 - **Electric vision layers** — three independently toggleable overlays in high-voltage neon:
   - **Heatmap** — squares you control (electric green), the opponent controls (hot magenta), and contested squares (electric cyan).
   - **Threats** — any of your hanging pieces (attacked by a lower-value piece, or undefended) gets a pulsing electric-orange glow.

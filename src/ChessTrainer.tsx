@@ -15,6 +15,7 @@ import {
   Lightbulb,
   Zap,
   ChevronRight,
+  Compass,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -23,12 +24,24 @@ import {
 
 const PIECE_VALUE: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
 
+// Main lines, validated move-by-move against chess.js so every SAN is the
+// exact notation the engine produces (castling, captures, disambiguation).
 const OPENINGS: Record<string, string[]> = {
-  "Ruy Lopez": ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7"],
-  "Sicilian Defense": ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"],
-  "Queen's Gambit": ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O"],
-  "Caro-Kann": ["e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Bf5", "Ng3", "Bg6"],
-  "Italian Game": ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6"],
+  "Ruy Lopez": ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6", "c3", "O-O"],
+  "Italian Game": ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O", "a4", "a5"],
+  "Scotch Game": ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Nf6", "Nxc6", "bxc6", "e5", "Qe7", "Qe2", "Nd5"],
+  "Vienna Game": ["e4", "e5", "Nc3", "Nf6", "f4", "d5", "fxe5", "Nxe4", "Nf3", "Be7", "d3", "Nxc3"],
+  "Sicilian Najdorf": ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be2", "e5", "Nb3", "Be7", "O-O", "O-O"],
+  "French Defense": ["e4", "e6", "d4", "d5", "Nc3", "Nf6", "Bg5", "Be7", "e5", "Nfd7", "Bxe7", "Qxe7", "f4", "a6", "Nf3", "c5"],
+  "Caro-Kann": ["e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Bf5", "Ng3", "Bg6", "h4", "h6", "Nf3", "Nd7"],
+  "Scandinavian": ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6", "Nf3", "c6", "Bc4", "Bf5", "Bd2", "e6"],
+  "Pirc Defense": ["e4", "d6", "d4", "Nf6", "Nc3", "g6", "f4", "Bg7", "Nf3", "O-O", "Be2", "c5"],
+  "Queen's Gambit Declined": ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O", "Nf3", "h6", "Bh4", "b6"],
+  "Slav Defense": ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "dxc4", "a4", "Bf5", "e3", "e6", "Bxc4", "Bb4"],
+  "King's Indian Defense": ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "Nf3", "O-O", "Be2", "e5", "O-O", "Nc6"],
+  "Nimzo-Indian Defense": ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "e3", "O-O", "Bd3", "d5", "Nf3", "c5", "O-O", "Nc6"],
+  "London System": ["d4", "d5", "Nf3", "Nf6", "Bf4", "e6", "e3", "c5", "c3", "Nc6", "Nbd2", "Bd6", "Bg3", "O-O"],
+  "English Opening": ["c4", "e5", "Nc3", "Nf6", "Nf3", "Nc6", "g3", "d5", "cxd5", "Nxd5", "Bg2", "Nb6", "O-O", "Be7"],
 };
 
 const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"];
@@ -202,6 +215,30 @@ function moveReason(m: RankedMove): string {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Opening book — the next main-line move for the side to move.       */
+/* ------------------------------------------------------------------ */
+
+interface BookHint {
+  from: Square;
+  to: Square;
+  san: string;
+}
+
+/** The next book move, but only while the game is still ON the main line. */
+function nextBookMove(game: Chess, openingName: string): BookHint | null {
+  const line = OPENINGS[openingName];
+  if (!line) return null;
+  const history = game.history();
+  if (history.length >= line.length) return null;
+  for (let i = 0; i < history.length; i++) {
+    if (history[i] !== line[i]) return null; // player/bot has left the book
+  }
+  const san = line[history.length];
+  const mv = game.moves({ verbose: true }).find((m) => m.san === san);
+  return mv ? { from: mv.from, to: mv.to, san } : null;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Bot engine — MOCK ASYNC STUB.                                      */
 /*                                                                     */
 /*  Replace the body of getBotMove() with a Stockfish Web Worker:      */
@@ -286,6 +323,7 @@ export default function ChessTrainer() {
   const [showControl, setShowControl] = useState(true); // control heatmap (colors)
   const [showAttacks, setShowAttacks] = useState(true); // under-attack markers
   const [showLast, setShowLast] = useState(true); // last-move highlight
+  const [openingGuide, setOpeningGuide] = useState(true); // guide me through the book
   const [bestMoves, setBestMoves] = useState<RankedMove[]>([]);
 
   // Coach + blunder flow
@@ -309,10 +347,12 @@ export default function ChessTrainer() {
     setThinking(false);
     setStarted(true);
     setCoach(
-      `Playing the ${opening} as ${playerColor === "w" ? "White" : "Black"}. Bot rated ${elo}. Toggle the Vision layers, and hit Best Moves whenever you're stuck.`
+      `Playing the ${opening} as ${playerColor === "w" ? "White" : "Black"}. Bot rated ${elo}.${
+        openingGuide ? " Follow the green arrow to learn the main line." : " Best Moves and the Vision layers are one click away."
+      }`
     );
     syncState();
-  }, [opening, playerColor, elo, syncState]);
+  }, [opening, playerColor, elo, openingGuide, syncState]);
 
   /* ---- Bot move ---------------------------------------------------- */
   const runBot = useCallback(async () => {
@@ -393,16 +433,24 @@ export default function ChessTrainer() {
         return false; // don't commit yet; the modal decides
       }
 
-      // Commit the good move.
+      // Opening-guide feedback (read from the live game, before we commit).
+      const expected = openingGuide ? nextBookMove(gameRef.current, opening) : null;
+
       commitMove(from, to);
-      setCoach(
-        result.captured
-          ? `Nice — you won a ${PIECE_NAME[result.captured]}. Keep your pieces coordinated.`
-          : "Solid. The bot is thinking…"
-      );
+
+      let msg = result.captured
+        ? `Nice — you won a ${PIECE_NAME[result.captured]}. Keep your pieces coordinated.`
+        : "Solid. The bot is thinking…";
+      if (expected) {
+        msg =
+          result.san === expected.san
+            ? `📖 On book — ${result.san} is the ${opening} main line. Bot to reply…`
+            : `You left the ${opening} book (main line was ${expected.san}). Own your plan — bot to reply…`;
+      }
+      setCoach(msg);
       return true;
     },
-    [started, blunder, thinking, playerColor, commitMove]
+    [started, blunder, thinking, playerColor, commitMove, openingGuide, opening]
   );
 
   const undoAndRetry = () => {
@@ -491,14 +539,23 @@ export default function ChessTrainer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fen, showControl, showLast, showAttacks, started, playerColor, botColor]);
 
-  // Best-move suggestions → neon arrows on the board.
-  const bestArrows = useMemo(
-    () =>
-      bestMoves
-        .slice(0, 3)
-        .map((m, i) => [m.from, m.to, BEST_ARROW_COLORS[i]] as [Square, Square, string]),
-    [bestMoves]
-  );
+  // Opening-guide hint — the book move for the player, while still in book.
+  const bookHint = useMemo<BookHint | null>(() => {
+    if (!started || blunder || !openingGuide) return null;
+    if (gameRef.current.isGameOver()) return null;
+    if (gameRef.current.turn() !== playerColor) return null;
+    return nextBookMove(gameRef.current, opening);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fen, started, blunder, openingGuide, playerColor, opening]);
+
+  // Board arrows: opening-guide move (emerald) + best-move suggestions (neon).
+  const arrows = useMemo(() => {
+    const list: [Square, Square, string][] = bestMoves
+      .slice(0, 3)
+      .map((m, i) => [m.from, m.to, BEST_ARROW_COLORS[i]]);
+    if (bookHint) list.unshift([bookHint.from, bookHint.to, "#00ffa0"]);
+    return list;
+  }, [bestMoves, bookHint]);
 
   /* ---- Derived UI data --------------------------------------------- */
   const pairedHistory = useMemo(() => {
@@ -569,7 +626,7 @@ export default function ChessTrainer() {
                   started && !blunder && !thinking && gameRef.current.turn() === playerColor
                 }
                 customSquareStyles={squareStyles}
-                customArrows={bestArrows}
+                customArrows={arrows}
                 customArrowColor="#b026ff"
                 customBoardStyle={{ borderRadius: "12px", boxShadow: "0 8px 30px rgba(0,0,0,0.4)" }}
                 customDarkSquareStyle={{ backgroundColor: "#1e293b" }}
@@ -578,8 +635,13 @@ export default function ChessTrainer() {
             </div>
 
             {/* Vision legend — mirrors the active layers */}
-            {started && (showControl || showAttacks || showLast || bestMoves.length > 0) && (
+            {started && (showControl || showAttacks || showLast || bestMoves.length > 0 || bookHint) && (
               <div className="mt-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs text-slate-400">
+                {bookHint && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded-sm" style={{ background: "#00ffa0" }} /> Book move
+                  </span>
+                )}
                 {showControl && (
                   <>
                     <span className="flex items-center gap-1.5">
@@ -675,6 +737,28 @@ export default function ChessTrainer() {
                 ))}
               </select>
 
+              {/* Opening guide toggle */}
+              <label className="mb-4 flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-800/40 px-3 py-2.5">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
+                  <Compass className="h-3.5 w-3.5 text-emerald-300" /> Guide me through the opening
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={openingGuide}
+                  onClick={() => setOpeningGuide((v) => !v)}
+                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                    openingGuide ? "bg-emerald-500" : "bg-slate-700"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+                      openingGuide ? "left-[18px]" : "left-0.5"
+                    }`}
+                  />
+                </button>
+              </label>
+
               <button
                 onClick={startGame}
                 className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-emerald-400 to-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 active:scale-[0.98]"
@@ -732,6 +816,16 @@ export default function ChessTrainer() {
               <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
                 <MessageSquareText className="h-4 w-4 text-indigo-400" /> Coach's Feedback
               </h2>
+              {openingGuide && bookHint && (
+                <div className="mb-3 flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5 text-xs text-emerald-200">
+                  <Compass className="h-4 w-4 shrink-0" />
+                  <span>
+                    <span className="font-semibold">{opening}</span> — play{" "}
+                    <span className="font-mono font-semibold text-emerald-100">{bookHint.san}</span> to stay in
+                    book (green arrow).
+                  </span>
+                </div>
+              )}
               <div className="flex gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5">
                 <Swords className="mt-0.5 h-4 w-4 shrink-0 text-indigo-400" />
                 <p className="text-sm leading-relaxed text-slate-300">{coach}</p>
