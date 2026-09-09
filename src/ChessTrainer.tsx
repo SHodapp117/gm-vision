@@ -349,6 +349,19 @@ export default function ChessTrainer() {
       });
     }
 
+    // Last-move highlight (from + to squares), layered under the attack glow.
+    const verbose = gameRef.current.history({ verbose: true });
+    const last = verbose[verbose.length - 1];
+    if (last) {
+      [last.from, last.to].forEach((sq) => {
+        styles[sq] = {
+          ...(styles[sq] || {}),
+          background: styles[sq]?.background ?? "rgba(129,140,248,0.16)",
+          boxShadow: "inset 0 0 0 2px rgba(129,140,248,0.55)",
+        };
+      });
+    }
+
     // Under-attack glow on the player's own hanging pieces.
     findHangingPieces(gameRef.current, playerColor).forEach((h) => {
       styles[h.square] = {
