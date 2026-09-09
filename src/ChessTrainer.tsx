@@ -52,15 +52,58 @@ const PIECE_NAME: Record<string, string> = {
 
 /* Electric, high-voltage vision palette (neon over slate squares). */
 const ELECTRIC = {
-  mine: "rgba(0, 255, 156, 0.40)", // electric green — your control
-  enemy: "rgba(255, 42, 109, 0.42)", // hot magenta — enemy control
-  contested: "rgba(0, 224, 255, 0.42)", // electric cyan — contested
   attackRing: "rgba(255, 138, 0, 1)", // electric orange — under attack
   lastFill: "rgba(179, 102, 255, 0.30)", // electric violet — last move
   lastRing: "rgba(179, 102, 255, 0.75)",
 };
 // Distinct neon arrow colors for the top best moves (#1 → #3).
 const BEST_ARROW_COLORS = ["#b026ff", "#00e0ff", "#ffd60a"];
+
+/* ------------------------------------------------------------------ */
+/*  Control-heatmap color theory.                                      */
+/*                                                                     */
+/*  Each piece type owns a signature HUE, spread around the wheel for  */
+/*  contrast yet kept at one saturation/lightness band so they read as */
+/*  a family. A controlled square is tinted by its *dominant* (lowest- */
+/*  value) attacker — the piece that tactically owns it:               */
+/*    • HUE       = that piece's type                                  */
+/*    • LIGHTNESS = side  (bright = you, deep = enemy)                 */
+/*    • ALPHA     = control density (how many attackers) → vibrancy    */
+/*  A true value-tie between sides is a standoff → neutral silver.     */
+/* ------------------------------------------------------------------ */
+
+const PIECE_HUE: Record<string, number> = {
+  p: 150, // pawn   — spring green
+  n: 205, // knight — azure
+  b: 272, // bishop — violet
+  r: 18, // rook   — red-orange
+  q: 320, // queen  — magenta
+  k: 45, // king   — amber
+};
+
+const lowestValueType = (types: string[]): string =>
+  types.reduce((best, t) => (PIECE_VALUE[t] < PIECE_VALUE[best] ? t : best), types[0]);
+
+/** Heatmap color for a square, from who attacks it (piece types per side). */
+function controlColor(yourTypes: string[] | undefined, enemyTypes: string[] | undefined): string | null {
+  const yours = yourTypes ?? [];
+  const enemies = enemyTypes ?? [];
+  const density = yours.length + enemies.length;
+  if (density === 0) return null;
+
+  const alpha = Math.min(0.66, 0.28 + 0.11 * (density - 1)); // vibrancy ← density
+  const yourMinType = yours.length ? lowestValueType(yours) : null;
+  const enemyMinType = enemies.length ? lowestValueType(enemies) : null;
+  const yourMin = yourMinType ? PIECE_VALUE[yourMinType] : Infinity;
+  const enemyMin = enemyMinType ? PIECE_VALUE[enemyMinType] : Infinity;
+
+  if (yourMin === enemyMin) return `hsla(200, 16%, 82%, ${alpha})`; // standoff — silver
+
+  const you = yourMin < enemyMin;
+  const type = (you ? yourMinType : enemyMinType) as string;
+  const light = you ? 62 : 44; // side tone: bright vs deep
+  return `hsla(${PIECE_HUE[type]}, 92%, ${light}%, ${alpha})`;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Board-control / attack helpers (geometry, not legal-move based)    */
@@ -494,17 +537,14 @@ export default function ChessTrainer() {
     if (!started) return {};
     const styles: Record<string, React.CSSProperties> = {};
 
-    // Layer 1 — control heatmap (electric colors).
+    // Layer 1 — control heatmap: hue = dominant piece, tone = side, alpha = density.
     if (showControl) {
       const playerMap = buildAttackMap(gameRef.current, playerColor);
       const oppMap = buildAttackMap(gameRef.current, botColor);
       const all = new Set([...Object.keys(playerMap), ...Object.keys(oppMap)]);
       all.forEach((sq) => {
-        const p = !!playerMap[sq];
-        const o = !!oppMap[sq];
-        if (p && o) styles[sq] = { background: ELECTRIC.contested };
-        else if (o) styles[sq] = { background: ELECTRIC.enemy };
-        else if (p) styles[sq] = { background: ELECTRIC.mine };
+        const color = controlColor(playerMap[sq], oppMap[sq]);
+        if (color) styles[sq] = { background: color };
       });
     }
 
@@ -643,17 +683,19 @@ export default function ChessTrainer() {
                   </span>
                 )}
                 {showControl && (
-                  <>
-                    <span className="flex items-center gap-1.5">
-                      <span className="h-3 w-3 rounded-sm" style={{ background: ELECTRIC.mine }} /> Your control
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="h-3 w-3 rounded-sm" style={{ background: ELECTRIC.enemy }} /> Enemy control
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="h-3 w-3 rounded-sm" style={{ background: ELECTRIC.contested }} /> Contested
-                    </span>
-                  </>
+                  <span className="flex items-center gap-2">
+                    <span className="text-slate-500">Control by</span>
+                    {(["p", "n", "b", "r", "q", "k"] as const).map((t) => (
+                      <span key={t} className="flex items-center gap-1" title={PIECE_NAME[t]}>
+                        <span
+                          className="h-3 w-3 rounded-sm"
+                          style={{ background: `hsla(${PIECE_HUE[t]}, 92%, 58%, 0.95)` }}
+                        />
+                        <span className="uppercase tracking-wide text-slate-500">{t}</span>
+                      </span>
+                    ))}
+                    <span className="text-slate-500">· bright = you · deep = enemy · brighter = more attackers</span>
+                  </span>
                 )}
                 {showAttacks && (
                   <span className="flex items-center gap-1.5">
