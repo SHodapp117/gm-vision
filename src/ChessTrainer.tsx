@@ -66,12 +66,11 @@ const ELECTRIC = {
 /*  A value-tie between sides is a standoff → neutral silver.          */
 /* ------------------------------------------------------------------ */
 
-// Ramps ordered for a smooth sweep across the provided brand colors.
-// The bot ramp ends WARM (magenta→orange) so its king/queen never read as
-// blue against the player's Pacific-Blue king; Electric Blue sits at the
-// pawn end instead.
+// YOU: cool Pacific-NW nature ramp. BOT: "Ultraviolet Plasma" — a synthetic
+// neon violet→magenta→pink arc that lives entirely outside the player's cool
+// gamut and the danger red, so the two sides never read alike.
 const PLAYER_RAMP = ["#55cc21", "#7cd3d3", "#3151bf"]; // Rave Green → Heritage Aqua → Pacific Blue
-const ENEMY_RAMP = ["#0691db", "#ad0afe", "#ff3503"]; // Electric Blue → Neon Purple → Electric Orange
+const ENEMY_RAMP = ["#6a00f4", "#c400e0", "#ff2fb0"]; // Neon Violet → Neon Magenta → Hot Pink
 const PIECE_ORDER = ["p", "n", "b", "r", "q", "k"]; // ramp position, cheapest → richest
 
 // In-danger pieces: Hong-Kong-neon red, uniform (danger = red, universally).
