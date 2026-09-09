@@ -52,7 +52,6 @@ const PIECE_NAME: Record<string, string> = {
 
 /* Electric, high-voltage vision palette (neon over slate squares). */
 const ELECTRIC = {
-  attackRing: "rgba(255, 138, 0, 1)", // electric orange — under attack
   lastFill: "rgba(179, 102, 255, 0.30)", // electric violet — last move
   lastRing: "rgba(179, 102, 255, 0.75)",
 };
@@ -563,15 +562,17 @@ export default function ChessTrainer() {
       }
     }
 
-    // Layer 3 — under-attack glow on the player's own hanging pieces (wins).
+    // Layer 3 — under-attack glow, pulsing in the hanging piece's own hue (wins).
     if (showAttacks) {
       findHangingPieces(gameRef.current, playerColor).forEach((h) => {
+        const ring = `hsl(${PIECE_HUE[h.type]}, 95%, 55%)`;
         styles[h.square] = {
           ...(styles[h.square] || {}),
-          boxShadow: `inset 0 0 0 3px ${ELECTRIC.attackRing}`,
+          ["--atk" as string]: ring, // drives the ct-pulse keyframe
+          boxShadow: `inset 0 0 0 3px ${ring}`,
           animation: "ct-pulse 1.4s ease-in-out infinite",
           borderRadius: "4px",
-        };
+        } as React.CSSProperties;
       });
     }
 
@@ -623,11 +624,11 @@ export default function ChessTrainer() {
   /* ------------------------------------------------------------------ */
   return (
     <div className="min-h-screen w-full bg-slate-950 font-sans text-slate-100 antialiased">
-      {/* keyframes for the under-attack pulse */}
+      {/* Under-attack pulse — ring color comes from each square's --atk var. */}
       <style>{`
         @keyframes ct-pulse {
-          0%, 100% { box-shadow: inset 0 0 0 3px rgba(255,138,0,0.45); }
-          50%      { box-shadow: inset 0 0 0 4px rgba(255,138,0,1); }
+          0%, 100% { box-shadow: inset 0 0 0 3px var(--atk, #ff8a00); }
+          50%      { box-shadow: inset 0 0 0 4px var(--atk, #ff8a00), 0 0 11px 1px var(--atk, #ff8a00); }
         }
       `}</style>
 
@@ -701,9 +702,9 @@ export default function ChessTrainer() {
                   <span className="flex items-center gap-1.5">
                     <span
                       className="h-3 w-3 rounded-sm"
-                      style={{ boxShadow: `inset 0 0 0 2px ${ELECTRIC.attackRing}` }}
+                      style={{ boxShadow: "inset 0 0 0 2px hsl(0,0%,80%)" }}
                     />{" "}
-                    Under attack
+                    Under attack (pulses in the piece's hue)
                   </span>
                 )}
                 {showLast && (
