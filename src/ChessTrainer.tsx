@@ -17,6 +17,9 @@ import {
   ChevronRight,
   Compass,
 } from "lucide-react";
+import { getEngine, parseUciMove, isSuperseded, type EngineLine } from "./engine/stockfish";
+import { evaluateMove, type MoveEvaluation, type MoveQuality } from "./engine/classify";
+import EvalBar from "./components/EvalBar";
 
 /* ------------------------------------------------------------------ */
 /*  Static config                                                      */
@@ -281,6 +284,38 @@ function moveReason(m: RankedMove): string {
   return "it improves your position while keeping everything defended.";
 }
 
+/** Human-readable reason for a flagged mistake/blunder, from the engine's verdict. */
+function describeEngineVerdict(verdict: MoveEvaluation, fenBefore: string): string {
+  let bestSan: string | undefined;
+  if (verdict.bestMoveUci) {
+    try {
+      const clone = new Chess(fenBefore);
+      const { from, to, promotion } = parseUciMove(verdict.bestMoveUci);
+      const mv = clone.move({ from, to, promotion });
+      bestSan = mv?.san;
+    } catch {
+      bestSan = undefined;
+    }
+  }
+  const bestSuffix = bestSan ? ` The engine's top choice was ${bestSan} instead.` : "";
+
+  if (verdict.allowsMateIn !== undefined) {
+    return `That allows a forced checkmate in ${verdict.allowsMateIn}!${bestSuffix}`;
+  }
+  const label = verdict.quality === "blunder" ? "a blunder" : "a mistake";
+  const pawns = (verdict.cpLoss / 100).toFixed(1);
+  return `That's ${label} — it costs about ${pawns} pawns of evaluation.${bestSuffix}`;
+}
+
+/** Short " (eval +1.4)" / " (mate in 3)" suffix for coach text. */
+function formatEvalForCoach(line: EngineLine | undefined): string {
+  if (!line) return "";
+  if (line.mate !== undefined) return ` (mate in ${Math.abs(line.mate)})`;
+  if (line.cp === undefined) return "";
+  const pawns = (line.cp / 100).toFixed(1);
+  return ` (eval ${line.cp >= 0 ? "+" : ""}${pawns})`;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Opening book — the next main-line move for the side to move.       */
 /* ------------------------------------------------------------------ */
@@ -307,33 +342,54 @@ function nextBookMove(game: Chess, openingName: string): BookHint | null {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Bot engine — MOCK ASYNC STUB.                                      */
+/*  Bot engine — real Stockfish, with a heuristic fallback.             */
 /*                                                                     */
-/*  Replace the body of getBotMove() with a Stockfish Web Worker:      */
-/*    const worker = new Worker('/stockfish.js');                      */
-/*    worker.postMessage(`position fen ${fen}`);                       */
-/*    worker.postMessage(`go depth ${eloToDepth(elo)}`);               */
-/*    // resolve on 'bestmove ...'                                     */
-/*  It already returns a valid chess.js verbose move, so the plug-in   */
-/*  point is fully isolated here.                                      */
+/*  While still on the chosen opening's main line, the bot just plays  */
+/*  the book move (reusing the same `nextBookMove` the player's guide   */
+/*  arrow uses). Off book, it asks Stockfish for a move at a strength   */
+/*  derived from the ELO slider. If the engine isn't ready yet or the   */
+/*  call fails/times out, it falls back to the old material+noise      */
+/*  heuristic (`pickMove`) so the bot never simply hangs.               */
 /* ------------------------------------------------------------------ */
 
 type VerboseMove = ReturnType<Chess["moves"]> extends (infer T)[] ? T : never;
+
+/** Scale bot "thinking time" with ELO — weaker bots move faster, not just worse. */
+function eloToMovetime(elo: number): number {
+  const t = Math.max(0, Math.min(1, (elo - 600) / 2600));
+  return Math.round(200 + t * 900);
+}
+
+/**
+ * The book's SAN at this FEN's ply, if any — derived from the FEN's fullmove
+ * number + side to move, NOT from chess.js's `.history()`. That matters
+ * because a `Chess` instance built directly from a bare FEN string (as both
+ * `pickMove` and `getBotMove` do — they only ever receive a fen, not the
+ * live game object) has empty `.history()` regardless of how deep into the
+ * game that FEN actually is, so history-based book lookups silently fail
+ * for the bot mid-game. (The player's own guide arrow uses `nextBookMove`
+ * directly against the live `gameRef` instead, which does carry real
+ * history — that path is unaffected and stricter, since it also verifies
+ * each prior move actually matches the book prefix.)
+ */
+function bookSanAtFen(fen: string, opening: string): string | null {
+  const parts = fen.split(" ");
+  const fullmove = parseInt(parts[5] || "1", 10);
+  const turn = parts[1];
+  const ply = (fullmove - 1) * 2 + (turn === "b" ? 1 : 0);
+  const book = OPENINGS[opening] || [];
+  return ply < book.length ? book[ply] : null;
+}
 
 function pickMove(game: Chess, elo: number, opening: string): VerboseMove | null {
   const moves = game.moves({ verbose: true });
   if (!moves.length) return null;
 
-  // 1) Follow the selected opening book. Book index (ply) is derived from the
-  //    FEN so it survives reconstructing the game from a bare FEN string.
-  const parts = game.fen().split(" ");
-  const fullmove = parseInt(parts[5] || "1", 10);
-  const turn = parts[1];
-  const ply = (fullmove - 1) * 2 + (turn === "b" ? 1 : 0);
-
-  const book = OPENINGS[opening] || [];
-  if (ply < book.length) {
-    const nextSan = book[ply];
+  // 1) Follow the selected opening book (ply derived from the FEN — see
+  //    `bookSanAtFen` — so it survives reconstructing the game from a bare
+  //    FEN string).
+  const nextSan = bookSanAtFen(game.fen(), opening);
+  if (nextSan) {
     const bookMove = moves.find((m) => m.san === nextSan);
     if (bookMove) return bookMove;
   }
@@ -361,15 +417,41 @@ function pickMove(game: Chess, elo: number, opening: string): VerboseMove | null
   return best;
 }
 
-function getBotMove(fen: string, elo: number, opening: string): Promise<VerboseMove | null> {
-  return new Promise((resolve) => {
-    // Simulated engine "think time" — swap for a real Web Worker later.
-    const think = 300 + Math.random() * 500;
-    setTimeout(() => {
-      const g = new Chess(fen);
-      resolve(pickMove(g, elo, opening));
-    }, think);
-  });
+async function getBotMove(fen: string, elo: number, opening: string): Promise<VerboseMove | null> {
+  const game = new Chess(fen);
+  const moves = game.moves({ verbose: true });
+  if (!moves.length) return null;
+
+  // 1) Stay in book while possible (see `bookSanAtFen` for why this can't
+  //    reuse `nextBookMove`/`.history()` here — `game` is built from a bare fen).
+  const bookSan = bookSanAtFen(fen, opening);
+  if (bookSan) {
+    const bookMove = moves.find((m) => m.san === bookSan);
+    if (bookMove) return bookMove;
+  }
+
+  // 2) Off book — ask the real engine, strength-limited to the ELO slider.
+  try {
+    const result = await getEngine().analyze(fen, {
+      movetime: eloToMovetime(elo),
+      multipv: 1,
+      elo,
+      channel: "bot",
+    });
+    if (result.bestmove) {
+      const { from, to, promotion } = parseUciMove(result.bestmove);
+      const exact = moves.find((m) => m.from === from && m.to === to && (m.promotion ?? "") === (promotion ?? ""));
+      if (exact) return exact;
+      // Engine's promotion choice may not match chess.js's default ("q") — match on from/to alone.
+      const loose = moves.find((m) => m.from === from && m.to === to);
+      if (loose) return loose;
+    }
+  } catch {
+    // Engine not ready / worker failed / timed out — fall through to the heuristic.
+  }
+
+  // 3) Fallback so the bot can never simply hang.
+  return pickMove(game, elo, opening);
 }
 
 /* ------------------------------------------------------------------ */
@@ -397,7 +479,8 @@ export default function ChessTrainer() {
   // Coach + blunder flow
   const [coach, setCoach] = useState("Configure your session and press Start Training.");
   const [thinking, setThinking] = useState(false);
-  const [blunder, setBlunder] = useState<{ reason: string; from: Square; to: Square } | null>(null);
+  const [checkingMove, setCheckingMove] = useState(false); // engine cp-loss check in flight
+  const [blunder, setBlunder] = useState<{ reason: string; quality: MoveQuality; cpLoss: number } | null>(null);
 
   // Click-to-move: the currently selected friendly square, if any.
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
@@ -407,6 +490,23 @@ export default function ChessTrainer() {
 
   const botColor = playerColor === "w" ? "b" : "w";
   const orientation = playerColor === "w" ? "white" : "black";
+
+  // react-chessboard v4 only sets up its own resize-driven sizing once, at
+  // mount, gated on the container already having a non-zero offsetWidth —
+  // in this flex/grid layout that check can land before layout settles, so
+  // the board silently never renders. Measuring the container ourselves and
+  // passing an explicit `boardWidth` sidesteps that internal gate entirely.
+  const boardWrapRef = useRef<HTMLDivElement>(null);
+  const [boardWidth, setBoardWidth] = useState(480);
+  useEffect(() => {
+    const el = boardWrapRef.current;
+    if (!el) return;
+    const update = () => setBoardWidth(el.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const syncState = useCallback(() => {
     setFen(gameRef.current.fen());
@@ -449,15 +549,17 @@ export default function ChessTrainer() {
     setThinking(false);
   }, [thinking, elo, opening, playerColor, syncState]);
 
-  // Trigger the bot whenever it is its turn.
+  // Trigger the bot whenever it is its turn. Gated on `checkingMove` too — the
+  // player's move is committed optimistically, so the bot must wait for the
+  // async cp-loss verdict before it's allowed to reply.
   useEffect(() => {
-    if (!started || blunder) return;
+    if (!started || blunder || checkingMove) return;
     if (gameRef.current.isGameOver()) return;
     if (gameRef.current.turn() === botColor) {
       runBot();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fen, started, blunder, botColor]);
+  }, [fen, started, blunder, checkingMove, botColor]);
 
   // Lichess Opening Explorer — real-world game stats for the current
   // position. Debounced, abortable, and silent on failure (offline-friendly).
@@ -504,48 +606,76 @@ export default function ChessTrainer() {
     [syncState]
   );
 
+  /* ---- Post-move cp-loss check (engine, with heuristic fallback) --- */
+  // Runs AFTER the move is already committed (see onDrop below) — a real
+  // engine eval can't be had synchronously, so the drop is accepted
+  // optimistically and this retroactively flags the blunder modal if the
+  // verdict comes back bad enough.
+  const classifyPlayedMove = useCallback(
+    async (fenBefore: string, fenAfter: string, playedMoveUci: string): Promise<{ quality: MoveQuality; cpLoss: number; reason: string }> => {
+      try {
+        const verdict = await evaluateMove({
+          analyze: (fen, opts) => getEngine().analyze(fen, opts),
+          fenBefore,
+          fenAfter,
+          playedMoveUci,
+          movetime: 450,
+        });
+        if (verdict.quality !== "mistake" && verdict.quality !== "blunder") {
+          return { quality: verdict.quality, cpLoss: verdict.cpLoss, reason: "" };
+        }
+        return { quality: verdict.quality, cpLoss: verdict.cpLoss, reason: describeEngineVerdict(verdict, fenBefore) };
+      } catch (err) {
+        if (isSuperseded(err)) return { quality: "good", cpLoss: 0, reason: "" };
+        // Engine not ready / worker failed / timed out — fall back to the old
+        // material-hang heuristic so a blunder check never just hangs.
+        const afterGame = new Chess(fenAfter);
+        const hangingAfter = findHangingPieces(afterGame, playerColor);
+        const seriousHang = hangingAfter.find(
+          (h) => PIECE_VALUE[h.type] >= 3 && (!h.defended || h.minAttacker < PIECE_VALUE[h.type])
+        );
+        if (seriousHang) {
+          return {
+            quality: "blunder",
+            cpLoss: 300,
+            reason: `That move leaves your ${PIECE_NAME[seriousHang.type]} on ${seriousHang.square} hanging — it's attacked by a ${
+              seriousHang.minAttacker < PIECE_VALUE[seriousHang.type] ? "lower-value piece" : "piece"
+            } and ${seriousHang.defended ? "under-defended" : "completely undefended"}.`,
+          };
+        }
+        return { quality: "good", cpLoss: 0, reason: "" };
+      }
+    },
+    [playerColor]
+  );
+
   /* ---- User move + blunder correction ------------------------------ */
   const onDrop = useCallback(
     (sourceSquare: string, targetSquare: string) => {
-      if (!started || blunder || thinking) return false;
+      if (!started || blunder || thinking || checkingMove) return false;
       if (gameRef.current.turn() !== playerColor) return false;
 
       const from = sourceSquare as Square;
       const to = targetSquare as Square;
 
       // Validate on a clone first so an illegal move never mutates state.
-      const clone = new Chess(gameRef.current.fen());
-      let result;
+      const legalityClone = new Chess(gameRef.current.fen());
       try {
-        result = clone.move({ from, to, promotion: "q" });
+        if (!legalityClone.move({ from, to, promotion: "q" })) return false;
       } catch {
         return false; // illegal move
-      }
-      if (!result) return false;
-
-      // ---- Blunder detection: does this move hang material? ----
-      const hangingAfter = findHangingPieces(clone, playerColor);
-      const seriousHang = hangingAfter.find(
-        (h) => PIECE_VALUE[h.type] >= 3 && (!h.defended || h.minAttacker < PIECE_VALUE[h.type])
-      );
-      const randomBlunder = Math.random() < 0.05 && result.captured === undefined;
-
-      if (seriousHang || randomBlunder) {
-        const reason = seriousHang
-          ? `That move leaves your ${PIECE_NAME[seriousHang.type]} on ${seriousHang.square} hanging — it's attacked by a ${
-              seriousHang.minAttacker < PIECE_VALUE[seriousHang.type] ? "lower-value piece" : "piece"
-            } and ${seriousHang.defended ? "under-defended" : "completely undefended"}.`
-          : "This drops the evaluation. There's a stronger, safer continuation here.";
-        // Pause and let the player decide — undo, or override the coach.
-        setBlunder({ reason, from, to });
-        setCoach("Coach flagged this move. Undo and rethink, or override and play it anyway — your call.");
-        return false; // don't commit yet; the modal decides
       }
 
       // Opening-guide feedback (read from the live game, before we commit).
       const expected = openingGuide ? nextBookMove(gameRef.current, opening) : null;
+      const fenBefore = gameRef.current.fen();
 
-      commitMove(from, to);
+      // Optimistic commit — a real engine eval takes time, so we can't block
+      // the drop on it. The cp-loss verdict arrives async below and, if bad
+      // enough, retroactively opens the blunder modal (Undo & Retry pops
+      // this move back off; Play it anyway just dismisses the flag).
+      const result = commitMove(from, to);
+      if (!result) return false;
 
       let msg = result.captured
         ? `Nice — you won a ${PIECE_NAME[result.captured]}. Keep your pieces coordinated.`
@@ -557,9 +687,22 @@ export default function ChessTrainer() {
             : `You left the ${opening} book (main line was ${expected.san}). Own your plan — bot to reply…`;
       }
       setCoach(msg);
+
+      const fenAfter = gameRef.current.fen();
+      const playedMoveUci = `${result.from}${result.to}${result.promotion ?? ""}`;
+      setCheckingMove(true);
+      classifyPlayedMove(fenBefore, fenAfter, playedMoveUci)
+        .then((verdict) => {
+          if (verdict.quality === "mistake" || verdict.quality === "blunder") {
+            setBlunder({ reason: verdict.reason, quality: verdict.quality, cpLoss: verdict.cpLoss });
+            setCoach("Coach flagged this move. Undo and rethink, or override and play it anyway — your call.");
+          }
+        })
+        .finally(() => setCheckingMove(false));
+
       return true;
     },
-    [started, blunder, thinking, playerColor, commitMove, openingGuide, opening]
+    [started, blunder, thinking, checkingMove, playerColor, commitMove, openingGuide, opening, classifyPlayedMove]
   );
 
   // Legal targets for the currently selected square (recomputed whenever the
@@ -578,7 +721,7 @@ export default function ChessTrainer() {
   /* ---- Click-to-move: select a piece, then click a legal target ---- */
   const onSquareClick = useCallback(
     (square: string) => {
-      if (!started || blunder || thinking) return;
+      if (!started || blunder || thinking || checkingMove) return;
       const sq = square as Square;
 
       if (selectedSquare) {
@@ -601,44 +744,84 @@ export default function ChessTrainer() {
       const piece = gameRef.current.get(sq);
       setSelectedSquare(piece && piece.color === playerColor ? sq : null);
     },
-    [started, blunder, thinking, selectedSquare, selectionTargets, playerColor, onDrop]
+    [started, blunder, thinking, checkingMove, selectedSquare, selectionTargets, playerColor, onDrop]
   );
 
-  const undoAndRetry = () => {
+  // Player takes the flagged move back — it's already on the board, so this
+  // pops it back off rather than simply clearing a pre-commit flag.
+  const undoAndRetry = useCallback(() => {
+    gameRef.current.undo();
+    syncState();
     setBlunder(null);
     setCoach("Good — reassess the position. Find a move that keeps every piece defended.");
-  };
+  }, [syncState]);
 
-  // Player overrides the coach and plays the flagged move anyway.
-  const playAnyway = () => {
-    if (!blunder) return;
-    const { from, to } = blunder;
+  // Player overrides the coach — the move is already committed, so this just
+  // dismisses the flag and lets the bot proceed.
+  const playAnyway = useCallback(() => {
+    const wasBlunder = blunder?.quality === "blunder";
     setBlunder(null);
-    const mv = commitMove(from, to);
     setCoach(
-      mv?.captured
-        ? `Override accepted — you grabbed the ${PIECE_NAME[mv.captured]}. Bold; let's see if it holds up.`
+      wasBlunder
+        ? "Override accepted — you played through the blunder warning. Bold; let's see if it holds up."
         : "Override accepted — you played through the warning. Own the plan; the bot is thinking…"
     );
-  };
+  }, [blunder]);
 
   // Compute + show (or hide) the top best moves as arrows and coach text.
-  const toggleBestMoves = () => {
+  const toggleBestMoves = useCallback(async () => {
     if (bestMoves.length) {
       setBestMoves([]);
       return;
     }
-    if (!started || blunder || thinking) return;
+    if (!started || blunder || thinking || checkingMove) return;
     if (gameRef.current.turn() !== playerColor || gameRef.current.isGameOver()) return;
-    const ranked = rankPlayerMoves(gameRef.current, playerColor).slice(0, 3);
-    setBestMoves(ranked);
-    if (ranked.length) {
+
+    const fen = gameRef.current.fen();
+    try {
+      const result = await getEngine().analyze(fen, { multipv: 3, movetime: 700, channel: "bestmoves" });
+      if (gameRef.current.fen() !== fen) return; // position moved on while we awaited — discard
+      if (!result.lines.length) throw new Error("no engine lines");
+
+      const ranked: RankedMove[] = [];
+      for (const line of result.lines) {
+        const { from, to, promotion } = parseUciMove(line.moveUci);
+        try {
+          const clone = new Chess(fen);
+          const mv = clone.move({ from, to, promotion });
+          if (!mv) continue;
+          ranked.push({
+            from: mv.from,
+            to: mv.to,
+            san: mv.san,
+            piece: mv.piece,
+            captured: mv.captured,
+            score: line.mate !== undefined ? (line.mate > 0 ? 100000 : -100000) : line.cp ?? 0,
+          });
+        } catch {
+          // Skip a single unparseable engine line rather than losing the whole feature.
+        }
+      }
+      if (!ranked.length) throw new Error("no parseable engine lines");
+
+      setBestMoves(ranked);
       const top = ranked[0];
       setCoach(
-        `Top candidates: ${ranked.map((r) => r.san).join(", ")}. I'd play ${top.san} — ${moveReason(top)}`
+        `Top candidates: ${ranked.map((r) => r.san).join(", ")}. I'd play ${top.san}${formatEvalForCoach(
+          result.lines[0]
+        )} — ${moveReason(top)}`
       );
+    } catch (err) {
+      if (isSuperseded(err)) return;
+      // Engine unavailable/failed — fall back to the material/threat heuristic.
+      const ranked = rankPlayerMoves(gameRef.current, playerColor).slice(0, 3);
+      setBestMoves(ranked);
+      if (ranked.length) {
+        const top = ranked[0];
+        setCoach(`Top candidates: ${ranked.map((r) => r.san).join(", ")}. I'd play ${top.san} — ${moveReason(top)}`);
+      }
     }
-  };
+  }, [bestMoves, started, blunder, thinking, checkingMove, playerColor]);
 
   /* ---- Vision layers → per-square styles ---------------------------- */
   const squareStyles = useMemo(() => {
@@ -765,6 +948,10 @@ export default function ChessTrainer() {
     ? "Checkmate"
     : gameRef.current.isDraw()
     ? "Draw"
+    : blunder
+    ? "Coach flagged your move"
+    : checkingMove
+    ? "Checking your move…"
     : gameRef.current.isCheck()
     ? "Check"
     : started
@@ -815,23 +1002,29 @@ export default function ChessTrainer() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
           {/* -------- Board column -------- */}
           <div className="flex flex-col items-center">
-            <div className="w-full max-w-[560px] rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-2xl shadow-black/40">
-              <Chessboard
-                position={fen}
-                onPieceDrop={onDrop}
-                onSquareClick={onSquareClick}
-                boardOrientation={orientation}
-                animationDuration={200}
-                arePiecesDraggable={
-                  started && !blunder && !thinking && gameRef.current.turn() === playerColor
-                }
-                customSquareStyles={squareStyles}
-                customArrows={arrows}
-                customArrowColor="hsl(200, 16%, 66%)"
-                customBoardStyle={{ borderRadius: "12px", boxShadow: "0 8px 30px rgba(0,0,0,0.4)" }}
-                customDarkSquareStyle={{ backgroundColor: "#1e293b" }}
-                customLightSquareStyle={{ backgroundColor: "#c3ccda" }}
-              />
+            <div className="flex w-full max-w-[560px] items-stretch gap-3">
+              <EvalBar fen={fen} active={started} orientation={orientation} />
+              <div className="min-w-0 flex-1 rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-2xl shadow-black/40">
+                <div ref={boardWrapRef}>
+                  <Chessboard
+                    position={fen}
+                    onPieceDrop={onDrop}
+                    onSquareClick={onSquareClick}
+                    boardOrientation={orientation}
+                    boardWidth={boardWidth}
+                    animationDuration={200}
+                    arePiecesDraggable={
+                      started && !blunder && !thinking && !checkingMove && gameRef.current.turn() === playerColor
+                    }
+                    customSquareStyles={squareStyles}
+                    customArrows={arrows}
+                    customArrowColor="hsl(200, 16%, 66%)"
+                    customBoardStyle={{ borderRadius: "12px", boxShadow: "0 8px 30px rgba(0,0,0,0.4)" }}
+                    customDarkSquareStyle={{ backgroundColor: "#1e293b" }}
+                    customLightSquareStyle={{ backgroundColor: "#c3ccda" }}
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Vision legend — mirrors the active layers */}
@@ -1000,7 +1193,7 @@ export default function ChessTrainer() {
 
                 <button
                   onClick={toggleBestMoves}
-                  disabled={!started || !!blunder}
+                  disabled={!started || !!blunder || thinking || checkingMove}
                   className={`mt-2 flex w-full items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-40 ${
                     bestMoves.length
                       ? "border-violet-400/60 bg-violet-500/15 text-violet-200"

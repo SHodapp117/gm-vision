@@ -26,3 +26,6 @@ logs
 *.njsproj
 *.sln
 *.sw?
+
+# TS incremental build cache
+tsconfig.tsbuildinfo
