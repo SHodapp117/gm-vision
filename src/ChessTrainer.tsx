@@ -560,7 +560,7 @@ export default function ChessTrainer() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
           {/* -------- Board column -------- */}
           <div className="flex flex-col items-center">
-            <div className="w-full max-w-[560px] rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-2xl shadow-black/40 backdrop-blur-xl">
+            <div className="w-full max-w-[560px] rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-2xl shadow-black/40">
               <Chessboard
                 position={fen}
                 onPieceDrop={onDrop}
