@@ -67,9 +67,15 @@ const ELECTRIC = {
 /* ------------------------------------------------------------------ */
 
 // Ramps ordered for a smooth sweep across the provided brand colors.
+// The bot ramp ends WARM (magenta→orange) so its king/queen never read as
+// blue against the player's Pacific-Blue king; Electric Blue sits at the
+// pawn end instead.
 const PLAYER_RAMP = ["#55cc21", "#7cd3d3", "#3151bf"]; // Rave Green → Heritage Aqua → Pacific Blue
-const ENEMY_RAMP = ["#ff3503", "#ad0afe", "#0691db"]; // Electric Orange → Neon Purple → Electric Blue
+const ENEMY_RAMP = ["#0691db", "#ad0afe", "#ff3503"]; // Electric Blue → Neon Purple → Electric Orange
 const PIECE_ORDER = ["p", "n", "b", "r", "q", "k"]; // ramp position, cheapest → richest
+
+// In-danger pieces: Hong-Kong-neon red, uniform (danger = red, universally).
+const DANGER = "#ff073a";
 
 const hexToRgb = (hex: string): [number, number, number] => {
   const n = parseInt(hex.slice(1), 16);
@@ -583,17 +589,15 @@ export default function ChessTrainer() {
       }
     }
 
-    // Layer 3 — under-attack glow, pulsing in the hanging piece's own hue (wins).
+    // Layer 3 — in-danger pieces: uniform neon-red ring with a heartbeat (wins).
     if (showAttacks) {
       findHangingPieces(gameRef.current, playerColor).forEach((h) => {
-        const ring = pieceColor("you", h.type, 1); // your hanging piece, your palette
         styles[h.square] = {
           ...(styles[h.square] || {}),
-          ["--atk" as string]: ring, // drives the ct-pulse keyframe
-          boxShadow: `inset 0 0 0 3px ${ring}`,
-          animation: "ct-pulse 1.4s ease-in-out infinite",
+          boxShadow: `inset 0 0 0 3px ${DANGER}`,
+          animation: "ct-beat 1.4s ease-in-out infinite",
           borderRadius: "4px",
-        } as React.CSSProperties;
+        };
       });
     }
 
@@ -647,11 +651,14 @@ export default function ChessTrainer() {
   /* ------------------------------------------------------------------ */
   return (
     <div className="min-h-screen w-full bg-slate-950 font-sans text-slate-100 antialiased">
-      {/* Under-attack pulse — ring color comes from each square's --atk var. */}
+      {/* In-danger heartbeat — a subtle neon-red lub-dub, then rest. */}
       <style>{`
-        @keyframes ct-pulse {
-          0%, 100% { box-shadow: inset 0 0 0 3px var(--atk, #ff8a00); }
-          50%      { box-shadow: inset 0 0 0 4px var(--atk, #ff8a00), 0 0 11px 1px var(--atk, #ff8a00); }
+        @keyframes ct-beat {
+          0%, 100% { box-shadow: inset 0 0 0 3px ${DANGER}; }
+          10%      { box-shadow: inset 0 0 0 4px ${DANGER}, 0 0 11px 2px rgba(255,7,58,0.95); }
+          20%      { box-shadow: inset 0 0 0 3px ${DANGER}; }
+          32%      { box-shadow: inset 0 0 0 4px ${DANGER}, 0 0 8px 1px rgba(255,7,58,0.8); }
+          46%      { box-shadow: inset 0 0 0 3px ${DANGER}; }
         }
       `}</style>
 
@@ -723,9 +730,9 @@ export default function ChessTrainer() {
                   <span className="flex items-center gap-1.5">
                     <span
                       className="h-3 w-3 rounded-sm"
-                      style={{ boxShadow: "inset 0 0 0 2px hsl(0,0%,80%)" }}
+                      style={{ boxShadow: `inset 0 0 0 2px ${DANGER}` }}
                     />{" "}
-                    Under attack (pulses in the piece's color)
+                    In danger (neon-red beat)
                   </span>
                 )}
                 {showLast && (
@@ -841,7 +848,7 @@ export default function ChessTrainer() {
                   {(
                     [
                       { on: showControl, set: setShowControl, label: "Heatmap", dot: "linear-gradient(90deg,#00ff9c,#00e0ff)", ring: "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" },
-                      { on: showAttacks, set: setShowAttacks, label: "Threats", dot: "#ff8a00", ring: "border-orange-400/50 bg-orange-400/10 text-orange-200" },
+                      { on: showAttacks, set: setShowAttacks, label: "Threats", dot: DANGER, ring: "border-rose-500/50 bg-rose-500/10 text-rose-200" },
                       { on: showLast, set: setShowLast, label: "Last move", dot: "#b366ff", ring: "border-violet-400/50 bg-violet-400/10 text-violet-200" },
                     ] as const
                   ).map((t) => (
