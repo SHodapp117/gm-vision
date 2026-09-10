@@ -12,8 +12,10 @@ A modern, browser-based React chess training app that visualizes **board control
   - **Heatmap** — a piece-aware, team-branded control map. Each square is tinted by its *dominant* (lowest-value) attacker. **You** always play a cool Pacific-NW ramp (Rave Green `#55cc21` → Heritage Aqua `#7cd3d3` → Pacific Blue `#3151bf`); the **bot** plays "Ultraviolet Plasma" — a synthetic neon ramp (Neon Violet `#6A00F4` → Neon Magenta `#C400E0` → Hot Pink `#FF2FB0`) that lives entirely outside your cool gamut and the danger red, so the two sides never read alike and the bot's hot-pink king can't be confused with your Pacific-Blue king. Within a side, piece type is mapped along that ramp (pawn→king), so **side = warm vs cool**, **color = which piece**, and **opacity = control density**. Value ties read as neutral silver. The under-attack ring and all suggestion arrows draw from your ramp too, so every cue speaks one color language.
   - **Threats** — any of your hanging pieces (attacked by a lower-value piece, or undefended) gets a Hong-Kong-neon-red ring (`#FF073A`) with a subtle heartbeat "beat" — danger reads as red, universally, and the motion draws the eye.
   - **Last move** — the from/to squares of the most recent move, ringed in violet.
-- **Best Moves** — one click ranks the position's top three candidate moves and draws them as distinct neon arrows (violet → cyan → amber), with a short reason in the coach panel. (Heuristic for now — see the Stockfish note below.)
-- **Blunder correction, with player override** — if a move hangs material the game pauses and a modal explains *why* (e.g. "this leaves your Knight hanging"). You decide: **Undo & Retry**, or **Play it anyway** — the coach only advises, the player always has the final word.
+- **Real Stockfish engine** — the bot, the eval bar, best-moves, and blunder detection are all powered by a bundled Stockfish WASM engine (see below).
+- **Best Moves** — one click asks the engine for its top three lines and draws them as neon arrows colored by the moving piece, with a short reason + evaluation in the coach panel.
+- **Blunder correction, with player override** — the engine flags real mistakes/blunders (by centipawn loss); the game pauses and a modal explains *why*. You decide: **Undo & Retry**, or **Play it anyway** — the coach only advises, the player always has the final word.
+- **Tactics trainer** — a Puzzles mode with ~5,000 curated Lichess puzzles, a local tactics rating, streaks, theme/difficulty filters, and hints (see below).
 - **Coach's feedback** panel, PGN-style move history, and a glassmorphism control panel with a dark-mode-first, Vercel/Linear-inspired aesthetic.
 
 ## Tech stack
@@ -40,28 +42,43 @@ npm run build      # type-check + production build to dist/
 npm run preview    # preview the production build
 ```
 
-## Plugging in a real engine (Stockfish)
+## Chess engine (Stockfish)
 
-The bot is a **mock async stub**, isolated in `getBotMove()` inside
-[`src/ChessTrainer.tsx`](src/ChessTrainer.tsx). It currently follows the selected
-opening book, then falls back to an ELO-weighted heuristic. To use a real engine,
-replace the body of `getBotMove()` with a Stockfish Web Worker:
+The bot and all position evaluation are powered by a real **Stockfish** engine
+(single-threaded WebAssembly) running in a Web Worker — no server or special
+COOP/COEP headers required, so it works on any static host. The engine ships as
+static assets in [`public/engine/`](public/engine/) and is wrapped by
+[`src/engine/stockfish.ts`](src/engine/stockfish.ts)
+(`analyze(fen, { movetime, depth, multipv, elo })`).
 
-```ts
-const worker = new Worker("/stockfish.js");
-worker.postMessage(`position fen ${fen}`);
-worker.postMessage(`go depth ${eloToDepth(elo)}`);
-// resolve the promise on the 'bestmove ...' message
-```
+- **Bot strength** follows the ELO slider via `UCI_LimitStrength` / `UCI_Elo`
+  (and `Skill Level` below 1320). Off the opening book it asks the engine; if the
+  engine isn't ready it falls back to a heuristic so play never stalls.
+- **Eval bar** ([`src/components/EvalBar.tsx`](src/components/EvalBar.tsx)) shows the live evaluation.
+- **Move classification** ([`src/engine/classify.ts`](src/engine/classify.ts)) flags
+  real inaccuracies / mistakes / blunders by centipawn loss, feeding the blunder/override modal.
+- **Best Moves** uses the engine's MultiPV lines.
 
-The function already returns a valid `chess.js` verbose move, so the rest of the
-app needs no changes.
+> Stockfish is GPL-3.0 — see [Attribution & Licenses](#attribution--licenses).
+
+## Tactics trainer
+
+A second mode (the **Puzzles** tab) drills tactics from ~5,000 curated
+[Lichess](https://database.lichess.org/) puzzles (CC0), balanced across rating
+bands and themes. It tracks an Elo-style tactics rating and streak in
+`localStorage`, filters by theme and difficulty, and offers hints.
 
 ## Project structure
 
 ```
 src/
-  ChessTrainer.tsx   # the full trainer component (board, vision, blunder logic, bot stub)
+  App.tsx            # top-level shell + Play/Puzzles mode switcher
+  ChessTrainer.tsx   # the Play trainer (board, vision, opening guide, blunder logic)
+  PuzzleTrainer.tsx  # the tactics/puzzle mode
+  engine/            # Stockfish worker wrapper + move classification
+  components/        # EvalBar, Credits
+  puzzles/           # puzzle selection + rating store
+  data/puzzles.json  # curated CC0 puzzle dataset
   main.tsx           # React entry point
   index.css          # Tailwind directives + base styles
 ```

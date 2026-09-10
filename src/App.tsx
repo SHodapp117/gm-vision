@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { Crown, Swords, Puzzle as PuzzleIcon } from "lucide-react";
 import ChessTrainer from "./ChessTrainer";
-import PuzzleTrainer from "./PuzzleTrainer";
+import Credits from "./components/Credits";
+
+// Lazy-loaded so the ~900KB bundled puzzle dataset isn't pulled into the
+// initial (Play) bundle — only when the user opens the Puzzles tab.
+const PuzzleTrainer = lazy(() => import("./PuzzleTrainer"));
 
 type Tab = "play" | "puzzles";
 
@@ -63,7 +67,21 @@ export default function App() {
         </div>
       </nav>
 
-      {tab === "play" ? <ChessTrainer /> : <PuzzleTrainer />}
+      {tab === "play" ? (
+        <ChessTrainer />
+      ) : (
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center py-32 text-sm text-slate-500">
+              Loading puzzles…
+            </div>
+          }
+        >
+          <PuzzleTrainer />
+        </Suspense>
+      )}
+
+      <Credits />
     </div>
   );
 }

@@ -74,7 +74,7 @@ export default function Credits() {
         <h2 className="text-sm font-semibold text-slate-200">Attribution &amp; licenses</h2>
         <p className="mt-1 text-xs text-slate-500">
           GM Vision stands on open-source software and open chess data. Full details in{" "}
-          <Link label="CREDITS.md" href="https://github.com/" /> and{" "}
+          <Link label="CREDITS.md" href="https://github.com/SHodapp117/gm-vision/blob/main/CREDITS.md" /> and{" "}
           <span className="text-slate-400">NOTICE</span> at the repo root.
         </p>
       </header>
