@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { Crown, Swords, Puzzle as PuzzleIcon } from "lucide-react";
 import ChessTrainer from "./ChessTrainer";
 import Credits from "./components/Credits";
+import type { TrainingPosition } from "./game/trainingPosition";
 
 // Lazy-loaded so the ~900KB bundled puzzle dataset isn't pulled into the
 // initial (Play) bundle — only when the user opens the Puzzles tab.
@@ -22,6 +23,15 @@ function readTab(): Tab {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(() => readTab());
+
+  // A position handed from the Puzzles tab to Play ("Play from here"). Set it,
+  // switch to Play; ChessTrainer starts it and calls back to clear it.
+  const [playHandoff, setPlayHandoff] = useState<TrainingPosition | null>(null);
+
+  const onPlayFromPuzzle = useCallback((pos: TrainingPosition) => {
+    setPlayHandoff(pos);
+    setTab("play");
+  }, []);
 
   useEffect(() => {
     try {
@@ -68,7 +78,7 @@ export default function App() {
       </nav>
 
       {tab === "play" ? (
-        <ChessTrainer />
+        <ChessTrainer initialPosition={playHandoff} onConsumed={() => setPlayHandoff(null)} />
       ) : (
         <Suspense
           fallback={
@@ -77,7 +87,7 @@ export default function App() {
             </div>
           }
         >
-          <PuzzleTrainer />
+          <PuzzleTrainer onPlayFromPuzzle={onPlayFromPuzzle} />
         </Suspense>
       )}
 

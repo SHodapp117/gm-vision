@@ -17,8 +17,10 @@ import {
   Sparkles,
   ChevronRight,
   RefreshCw,
+  Swords,
 } from "lucide-react";
 import { type Puzzle } from "./data/puzzles";
+import { puzzlePosition, type TrainingPosition } from "./game/trainingPosition";
 import {
   getProgress,
   updateProgress,
@@ -79,7 +81,12 @@ type Status = "opponent" | "solving" | "solved" | "failed";
 /* ------------------------------------------------------------------ */
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
-export default function PuzzleTrainer() {
+interface PuzzleTrainerProps {
+  /** Hand the current puzzle position to the Play tab as a normal game. */
+  onPlayFromPuzzle?: (pos: TrainingPosition) => void;
+}
+
+export default function PuzzleTrainer({ onPlayFromPuzzle }: PuzzleTrainerProps = {}) {
   // --- Live game / puzzle state (refs drive timer-safe logic) --------
   const gameRef = useRef(new Chess());
   const movesRef = useRef<string[]>([]);
@@ -348,6 +355,16 @@ export default function PuzzleTrainer() {
     if (status !== "solving") return;
     setHintLevel((l) => Math.min(2, l + 1));
   }, [status]);
+
+  // Hand the CURRENT board position over to the Play tab as a normal game vs
+  // the bot (the puzzle position becomes the starting position, not a script).
+  const handlePlayFromHere = useCallback(() => {
+    if (!onPlayFromPuzzle) return;
+    const p = puzzleRef.current;
+    onPlayFromPuzzle(
+      puzzlePosition(gameRef.current.fen(), { puzzleId: p?.id, themes: p?.themes })
+    );
+  }, [onPlayFromPuzzle]);
 
   const onThemeChange = useCallback(
     (value: string) => {
@@ -744,6 +761,17 @@ export default function PuzzleTrainer() {
               >
                 Next puzzle <ChevronRight className="h-4 w-4" />
               </button>
+
+              {onPlayFromPuzzle && (
+                <button
+                  onClick={handlePlayFromHere}
+                  disabled={!puzzle || status === "opponent"}
+                  title="Continue this position as a normal game against the bot, with full coaching"
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-4 py-2.5 text-sm font-semibold text-indigo-200 transition-all hover:border-indigo-400/60 hover:bg-indigo-500/15 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Swords className="h-4 w-4" /> Play from here
+                </button>
+              )}
             </section>
 
             {/* Filters */}
