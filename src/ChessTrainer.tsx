@@ -16,9 +16,17 @@ import {
   Zap,
   ChevronRight,
   Compass,
+  Target,
+  Pin,
 } from "lucide-react";
 import { getEngine, parseUciMove, isSuperseded, type EngineLine } from "./engine/stockfish";
 import { evaluateMove, type MoveEvaluation, type MoveQuality } from "./engine/classify";
+import {
+  detectPatternTactics,
+  mateHintFromLines,
+  prioritize,
+  type TacticalOpportunity,
+} from "./engine/tactics";
 import {
   PIECE_VALUE,
   PIECE_NAME,
@@ -251,6 +259,27 @@ async function getBotMove(fen: string, elo: number, opening: string): Promise<Ve
 }
 
 /* ------------------------------------------------------------------ */
+/*  Tactical Radar — per-opportunity icon + neon styling.              */
+/* ------------------------------------------------------------------ */
+
+function tacticStyle(t: TacticalOpportunity): {
+  Icon: typeof Crown;
+  icon: string;
+  box: string;
+  text: string;
+} {
+  if (t.type === "mate") {
+    return t.side === "player"
+      ? { Icon: Crown, icon: "text-amber-300", box: "border-amber-400/40 bg-amber-400/10", text: "text-amber-100" }
+      : { Icon: AlertTriangle, icon: "text-rose-400", box: "border-rose-500/40 bg-rose-500/10", text: "text-rose-100" };
+  }
+  if (t.type === "fork") {
+    return { Icon: Swords, icon: "text-cyan-300", box: "border-cyan-400/40 bg-cyan-400/10", text: "text-cyan-100" };
+  }
+  return { Icon: Pin, icon: "text-violet-300", box: "border-violet-400/40 bg-violet-400/10", text: "text-violet-100" };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -274,6 +303,13 @@ export default function ChessTrainer() {
   const [showLast, setShowLast] = useState(true); // last-move highlight
   const [openingGuide, setOpeningGuide] = useState(true); // guide me through the book
   const [bestMoves, setBestMoves] = useState<RankedMove[]>([]);
+
+  // Tactical Radar — the coach names available tactics (mate/fork/pin) without
+  // ever revealing the move. Pattern tactics are found synchronously; forced
+  // mates are confirmed by the engine and merged in when they return.
+  const [showTactics, setShowTactics] = useState(true);
+  const [tactics, setTactics] = useState<TacticalOpportunity[]>([]);
+  const [tacticsScanning, setTacticsScanning] = useState(false);
 
   // Coach + blunder flow
   const [coach, setCoach] = useState("Configure your session and press Start Training.");
@@ -399,6 +435,52 @@ export default function ChessTrainer() {
       controller.abort();
     };
   }, [fen, started]);
+
+  // Tactical Radar — scan the position on the player's turn for available
+  // tactics. Forks/pins are found synchronously (instant), then the engine
+  // confirms any forced mate-in-1/2/3 and we merge it in at the top. The coach
+  // only NAMES the pattern here — the solving move is never surfaced, so the
+  // player still has to find it. Full-strength analysis (no ELO limit) so the
+  // radar tells the truth regardless of how weak the bot is set.
+  useEffect(() => {
+    if (!started || !showTactics || blunder || checkingMove) {
+      setTactics([]);
+      setTacticsScanning(false);
+      return;
+    }
+    const g = gameRef.current;
+    if (g.isGameOver() || g.turn() !== playerColor) {
+      setTactics([]);
+      setTacticsScanning(false);
+      return;
+    }
+
+    const scanFen = g.fen();
+    const pattern = detectPatternTactics(scanFen, playerColor);
+    setTactics(pattern);
+    setTacticsScanning(true);
+
+    let cancelled = false;
+    getEngine()
+      .analyze(scanFen, { multipv: 1, movetime: 500, channel: "tactics" })
+      .then((result) => {
+        if (cancelled || gameRef.current.fen() !== scanFen) return;
+        const mate = mateHintFromLines(result.lines);
+        if (mate) setTactics(prioritize([mate, ...pattern]));
+      })
+      .catch(() => {
+        // Superseded by a newer position, or engine unavailable — the
+        // synchronous fork/pin hints are already shown; nothing to do.
+      })
+      .finally(() => {
+        if (!cancelled) setTacticsScanning(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fen, started, showTactics, blunder, checkingMove, playerColor]);
 
   /* ---- Commit a move to the real game ------------------------------ */
   const commitMove = useCallback(
@@ -1056,6 +1138,67 @@ export default function ChessTrainer() {
                 <p className="text-sm leading-relaxed text-slate-300">{coach}</p>
               </div>
             </section>
+
+            {/* Tactical Radar — coach names available tactics without the move */}
+            {started && (
+              <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 backdrop-blur-xl">
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+                    <Target className="h-4 w-4 text-cyan-400" /> Tactical Radar
+                  </h2>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={showTactics}
+                    aria-label="Toggle tactical radar"
+                    onClick={() => setShowTactics((v) => !v)}
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                      showTactics ? "bg-cyan-500" : "bg-slate-700"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+                        showTactics ? "left-[18px]" : "left-0.5"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {!showTactics ? (
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    Tactics coach is off — flip the switch and it'll flag forks, pins, and forced mates as they
+                    appear, without giving away the move.
+                  </p>
+                ) : tactics.length ? (
+                  <ul className="flex flex-col gap-2">
+                    {tactics.map((t, i) => {
+                      const s = tacticStyle(t);
+                      return (
+                        <li
+                          key={`${t.type}-${t.side}-${i}`}
+                          className={`flex gap-2.5 rounded-xl border px-3 py-2.5 text-xs leading-relaxed ${s.box}`}
+                        >
+                          <s.Icon className={`mt-0.5 h-4 w-4 shrink-0 ${s.icon}`} />
+                          <span className={s.text}>{t.message}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : tacticsScanning ? (
+                  <p className="flex items-center gap-2 text-xs text-slate-500">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-400" /> Scanning the position…
+                  </p>
+                ) : (
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    No forcing tactics right now — keep improving your position and watch for the next chance.
+                  </p>
+                )}
+
+                <p className="mt-3 text-[11px] text-slate-600">
+                  The coach names the chance — you find the move.
+                </p>
+              </section>
+            )}
 
             {/* Lichess Opening Explorer — real-world stats for this exact position */}
             {started && explorerPct && (
