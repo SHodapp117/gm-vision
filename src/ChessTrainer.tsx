@@ -27,25 +27,146 @@ import EvalBar from "./components/EvalBar";
 
 const PIECE_VALUE: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
 
-// Main lines, validated move-by-move against chess.js so every SAN is the
-// exact notation the engine produces (castling, captures, disambiguation).
-const OPENINGS: Record<string, string[]> = {
-  "Ruy Lopez": ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6", "c3", "O-O"],
-  "Italian Game": ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O", "a4", "a5"],
-  "Scotch Game": ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Nf6", "Nxc6", "bxc6", "e5", "Qe7", "Qe2", "Nd5"],
-  "Vienna Game": ["e4", "e5", "Nc3", "Nf6", "f4", "d5", "fxe5", "Nxe4", "Nf3", "Be7", "d3", "Nxc3"],
-  "Sicilian Najdorf": ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be2", "e5", "Nb3", "Be7", "O-O", "O-O"],
-  "French Defense": ["e4", "e6", "d4", "d5", "Nc3", "Nf6", "Bg5", "Be7", "e5", "Nfd7", "Bxe7", "Qxe7", "f4", "a6", "Nf3", "c5"],
-  "Caro-Kann": ["e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Bf5", "Ng3", "Bg6", "h4", "h6", "Nf3", "Nd7"],
-  "Scandinavian": ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6", "Nf3", "c6", "Bc4", "Bf5", "Bd2", "e6"],
-  "Pirc Defense": ["e4", "d6", "d4", "Nf6", "Nc3", "g6", "f4", "Bg7", "Nf3", "O-O", "Be2", "c5"],
-  "Queen's Gambit Declined": ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O", "Nf3", "h6", "Bh4", "b6"],
-  "Slav Defense": ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "dxc4", "a4", "Bf5", "e3", "e6", "Bxc4", "Bb4"],
-  "King's Indian Defense": ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "Nf3", "O-O", "Be2", "e5", "O-O", "Nc6"],
-  "Nimzo-Indian Defense": ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "e3", "O-O", "Bd3", "d5", "Nf3", "c5", "O-O", "Nc6"],
-  "London System": ["d4", "d5", "Nf3", "Nf6", "Bf4", "e6", "e3", "c5", "c3", "Nc6", "Nbd2", "Bd6", "Bg3", "O-O"],
-  "English Opening": ["c4", "e5", "Nc3", "Nf6", "Nf3", "Nc6", "g3", "d5", "cxd5", "Nxd5", "Bg2", "Nb6", "O-O", "Be7"],
+// Each opening is authored as a MAIN line (index 0) plus a few variation lines,
+// all validated move-by-move against chess.js. They're compiled below into a
+// POSITION-KEYED book, so the guide and bot look up the current position rather
+// than tracking one linear line — sidelines and transpositions just work
+// instead of dead-ending the guide.
+const OPENING_LINES: Record<string, string[][]> = {
+  "Ruy Lopez": [
+    ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6", "c3", "O-O"],
+    ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Bxc6", "dxc6", "O-O", "f6", "d4", "exd4", "Qxd4", "Qxd4", "Nxd4"],
+    ["e4", "e5", "Nf3", "Nc6", "Bb5", "Nf6", "O-O", "Nxe4", "d4", "Nd6", "Bxc6", "dxc6", "dxe5", "Nf5", "Qxd8+", "Kxd8"],
+    ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "O-O", "c3", "d5", "exd5", "Nxd5"],
+  ],
+  "Italian Game": [
+    ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O", "a4", "a5"],
+    ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "Ng5", "d5", "exd5", "Na5", "Bb5+", "c6", "dxc6", "bxc6", "Be2", "h6"],
+    ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "b4", "Bxb4", "c3", "Ba5", "d4", "exd4", "O-O"],
+    ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+", "Nc3", "Nxe4"],
+  ],
+  "Scotch Game": [
+    ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Nf6", "Nxc6", "bxc6", "e5", "Qe7", "Qe2", "Nd5"],
+    ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Bc5", "Be3", "Qf6", "c3", "Nge7", "Bc4", "Ne5"],
+    ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Nf6", "Nxc6", "bxc6", "e5", "Qe7", "Qe2", "Nd5", "c4", "Ba6"],
+  ],
+  "Vienna Game": [
+    ["e4", "e5", "Nc3", "Nf6", "f4", "d5", "fxe5", "Nxe4", "Nf3", "Be7", "d3", "Nxc3"],
+    ["e4", "e5", "Nc3", "Nf6", "f4", "d5", "fxe5", "Nxe4", "Nf3", "Bg4", "Qe2", "Nxc3", "dxc3"],
+    ["e4", "e5", "Nc3", "Nf6", "Bc4", "Nc6", "d3", "Bb4", "Bg5", "h6"],
+  ],
+  "Sicilian Najdorf": [
+    ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be2", "e5", "Nb3", "Be7", "O-O", "O-O"],
+    ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be3", "e5", "Nb3", "Be6"],
+    ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Bg5", "e6", "f4", "Be7"],
+  ],
+  "French Defense": [
+    ["e4", "e6", "d4", "d5", "Nc3", "Nf6", "Bg5", "Be7", "e5", "Nfd7", "Bxe7", "Qxe7", "f4", "a6", "Nf3", "c5"],
+    ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+", "bxc3", "Ne7"],
+    ["e4", "e6", "d4", "d5", "e5", "c5", "c3", "Nc6", "Nf3", "Qb6"],
+    ["e4", "e6", "d4", "d5", "Nd2", "Nf6", "e5", "Nfd7", "Bd3", "c5", "c3", "Nc6"],
+  ],
+  "Caro-Kann": [
+    ["e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Bf5", "Ng3", "Bg6", "h4", "h6", "Nf3", "Nd7"],
+    ["e4", "c6", "d4", "d5", "e5", "Bf5", "Nf3", "e6", "Be2", "c5"],
+    ["e4", "c6", "d4", "d5", "exd5", "cxd5", "Bd3", "Nc6", "c3", "Nf6"],
+    ["e4", "c6", "d4", "d5", "exd5", "cxd5", "c4", "Nf6", "Nc3", "e6"],
+  ],
+  "Scandinavian": [
+    ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6", "Nf3", "c6", "Bc4", "Bf5", "Bd2", "e6"],
+    ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qd6", "d4", "Nf6", "Nf3", "a6"],
+    ["e4", "d5", "exd5", "Nf6", "d4", "Nxd5", "Nf3", "g6"],
+  ],
+  "Pirc Defense": [
+    ["e4", "d6", "d4", "Nf6", "Nc3", "g6", "f4", "Bg7", "Nf3", "O-O", "Be2", "c5"],
+    ["e4", "d6", "d4", "Nf6", "Nc3", "g6", "Nf3", "Bg7", "Be2", "O-O", "O-O"],
+    ["e4", "d6", "d4", "Nf6", "Nc3", "g6", "Be3", "Bg7", "Qd2", "c6"],
+  ],
+  "Queen's Gambit Declined": [
+    ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O", "Nf3", "h6", "Bh4", "b6"],
+    ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "cxd5", "exd5", "Bg5", "Be7", "e3", "O-O"],
+    ["d4", "d5", "c4", "e6", "Nc3", "c5", "cxd5", "exd5", "Nf3", "Nc6"],
+    ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Nf3", "c6", "Bg5", "h6", "Bh4", "dxc4"],
+  ],
+  "Slav Defense": [
+    ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "dxc4", "a4", "Bf5", "e3", "e6", "Bxc4", "Bb4"],
+    ["d4", "d5", "c4", "c6", "cxd5", "cxd5", "Nc3", "Nf6", "Nf3", "Nc6"],
+    ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "e6", "e3", "Nbd7"],
+  ],
+  "King's Indian Defense": [
+    ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "Nf3", "O-O", "Be2", "e5", "O-O", "Nc6"],
+    ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "Nf3", "O-O", "g3", "d6", "Bg2", "Nbd7"],
+    ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "f3", "O-O", "Be3", "e5"],
+    ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "f4", "O-O", "Nf3", "c5"],
+  ],
+  "Nimzo-Indian Defense": [
+    ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "e3", "O-O", "Bd3", "d5", "Nf3", "c5", "O-O", "Nc6"],
+    ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "Qc2", "O-O", "a3", "Bxc3+", "Qxc3", "b6"],
+    ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "Nf3", "c5", "g3", "cxd4"],
+    ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "Bg5", "h6", "Bh4", "c5"],
+  ],
+  "London System": [
+    ["d4", "d5", "Nf3", "Nf6", "Bf4", "e6", "e3", "c5", "c3", "Nc6", "Nbd2", "Bd6", "Bg3", "O-O"],
+    ["d4", "Nf6", "Nf3", "g6", "Bf4", "Bg7", "e3", "O-O", "Be2", "d6", "h3"],
+    ["d4", "d5", "Nf3", "Nf6", "Bf4", "c5", "e3", "Qb6", "Nc3", "c4"],
+  ],
+  "English Opening": [
+    ["c4", "e5", "Nc3", "Nf6", "Nf3", "Nc6", "g3", "d5", "cxd5", "Nxd5", "Bg2", "Nb6", "O-O", "Be7"],
+    ["c4", "c5", "Nc3", "Nc6", "g3", "g6", "Bg2", "Bg7", "Nf3", "Nf6", "O-O", "O-O"],
+    ["c4", "e5", "Nc3", "Nf6", "Nf3", "Nc6", "e3", "Bb4"],
+    ["c4", "Nf6", "Nc3", "g6", "g3", "Bg7", "Bg2", "O-O"],
+  ],
 };
+
+/** Position key: FEN without the half/full-move clocks, so transpositions match. */
+const posKey = (fen: string): string => fen.split(" ").slice(0, 4).join(" ");
+
+interface BookMove {
+  san: string;
+  from: Square;
+  to: Square;
+  piece: string; // moving piece type — drives the guide arrow hue
+  main: boolean; // belongs to the opening's main line (line 0)
+}
+type BookMap = Record<string, BookMove[]>;
+
+/** Replay every authored line and index each position → the book moves from it. */
+function compileOpening(lines: string[][]): BookMap {
+  const map: BookMap = {};
+  lines.forEach((line, lineIdx) => {
+    const g = new Chess();
+    for (const san of line) {
+      const key = posKey(g.fen());
+      let mv;
+      try {
+        mv = g.move(san);
+      } catch {
+        break; // lines are pre-validated, but never trust — bail this line
+      }
+      if (!mv) break;
+      const entry = (map[key] ||= []);
+      if (!entry.some((e) => e.san === mv.san)) {
+        entry.push({ san: mv.san, from: mv.from, to: mv.to, piece: mv.piece, main: lineIdx === 0 });
+      }
+    }
+  });
+  return map;
+}
+
+const OPENING_BOOKS: Record<string, BookMap> = Object.fromEntries(
+  Object.entries(OPENING_LINES).map(([name, lines]) => [name, compileOpening(lines)])
+);
+
+/** Book moves known at this position for the given opening ([] if out of book). */
+function bookMovesAtFen(fen: string, opening: string): BookMove[] {
+  return OPENING_BOOKS[opening]?.[posKey(fen)] ?? [];
+}
+
+/** The main-preferred book move from a set of entries. */
+function pickBookMove(entries: BookMove[]): BookMove | null {
+  if (!entries.length) return null;
+  return entries.find((e) => e.main) ?? entries[0];
+}
 
 const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
@@ -325,28 +446,23 @@ interface BookHint {
   to: Square;
   san: string;
   piece: string; // moving piece type — drives the arrow hue
+  alts: number; // how many OTHER book moves exist at this position
 }
 
-/** The next book move, but only while the game is still ON the main line. */
+/** The main-preferred book move at the CURRENT position (null if out of book). */
 function nextBookMove(game: Chess, openingName: string): BookHint | null {
-  const line = OPENINGS[openingName];
-  if (!line) return null;
-  const history = game.history();
-  if (history.length >= line.length) return null;
-  for (let i = 0; i < history.length; i++) {
-    if (history[i] !== line[i]) return null; // player/bot has left the book
-  }
-  const san = line[history.length];
-  const mv = game.moves({ verbose: true }).find((m) => m.san === san);
-  return mv ? { from: mv.from, to: mv.to, san, piece: mv.piece } : null;
+  const entries = bookMovesAtFen(game.fen(), openingName);
+  const pick = pickBookMove(entries);
+  if (!pick) return null;
+  return { from: pick.from, to: pick.to, san: pick.san, piece: pick.piece, alts: entries.length - 1 };
 }
 
 /* ------------------------------------------------------------------ */
 /*  Bot engine — real Stockfish, with a heuristic fallback.             */
 /*                                                                     */
-/*  While still on the chosen opening's main line, the bot just plays  */
-/*  the book move (reusing the same `nextBookMove` the player's guide   */
-/*  arrow uses). Off book, it asks Stockfish for a move at a strength   */
+/*  While the position is still in the chosen opening's book, the bot   */
+/*  plays a book move (same position-keyed book the guide arrow uses).  */
+/*  Off book, it asks Stockfish for a move at a strength                */
 /*  derived from the ELO slider. If the engine isn't ready yet or the   */
 /*  call fails/times out, it falls back to the old material+noise      */
 /*  heuristic (`pickMove`) so the bot never simply hangs.               */
@@ -360,37 +476,15 @@ function eloToMovetime(elo: number): number {
   return Math.round(200 + t * 900);
 }
 
-/**
- * The book's SAN at this FEN's ply, if any — derived from the FEN's fullmove
- * number + side to move, NOT from chess.js's `.history()`. That matters
- * because a `Chess` instance built directly from a bare FEN string (as both
- * `pickMove` and `getBotMove` do — they only ever receive a fen, not the
- * live game object) has empty `.history()` regardless of how deep into the
- * game that FEN actually is, so history-based book lookups silently fail
- * for the bot mid-game. (The player's own guide arrow uses `nextBookMove`
- * directly against the live `gameRef` instead, which does carry real
- * history — that path is unaffected and stricter, since it also verifies
- * each prior move actually matches the book prefix.)
- */
-function bookSanAtFen(fen: string, opening: string): string | null {
-  const parts = fen.split(" ");
-  const fullmove = parseInt(parts[5] || "1", 10);
-  const turn = parts[1];
-  const ply = (fullmove - 1) * 2 + (turn === "b" ? 1 : 0);
-  const book = OPENINGS[opening] || [];
-  return ply < book.length ? book[ply] : null;
-}
-
 function pickMove(game: Chess, elo: number, opening: string): VerboseMove | null {
   const moves = game.moves({ verbose: true });
   if (!moves.length) return null;
 
-  // 1) Follow the selected opening book (ply derived from the FEN — see
-  //    `bookSanAtFen` — so it survives reconstructing the game from a bare
-  //    FEN string).
-  const nextSan = bookSanAtFen(game.fen(), opening);
-  if (nextSan) {
-    const bookMove = moves.find((m) => m.san === nextSan);
+  // 1) Follow the opening's position-keyed book (keyed by board position, so it
+  //    works from a bare FEN and handles sidelines/transpositions).
+  const bookPick = pickBookMove(bookMovesAtFen(game.fen(), opening));
+  if (bookPick) {
+    const bookMove = moves.find((m) => m.san === bookPick.san);
     if (bookMove) return bookMove;
   }
 
@@ -422,11 +516,11 @@ async function getBotMove(fen: string, elo: number, opening: string): Promise<Ve
   const moves = game.moves({ verbose: true });
   if (!moves.length) return null;
 
-  // 1) Stay in book while possible (see `bookSanAtFen` for why this can't
-  //    reuse `nextBookMove`/`.history()` here — `game` is built from a bare fen).
-  const bookSan = bookSanAtFen(fen, opening);
-  if (bookSan) {
-    const bookMove = moves.find((m) => m.san === bookSan);
+  // 1) Stay in book while the position is known (position-keyed, so it works
+  //    from a bare FEN and follows player sidelines that are in the tree).
+  const bookPick = pickBookMove(bookMovesAtFen(fen, opening));
+  if (bookPick) {
+    const bookMove = moves.find((m) => m.san === bookPick.san);
     if (bookMove) return bookMove;
   }
 
@@ -466,7 +560,7 @@ export default function ChessTrainer() {
   // Setup / config
   const [playerColor, setPlayerColor] = useState<"w" | "b">("w");
   const [elo, setElo] = useState(1500);
-  const [opening, setOpening] = useState<keyof typeof OPENINGS>("Ruy Lopez");
+  const [opening, setOpening] = useState<keyof typeof OPENING_LINES>("Ruy Lopez");
   const [started, setStarted] = useState(false);
 
   // Training visuals — three independent vision layers
@@ -667,8 +761,8 @@ export default function ChessTrainer() {
       }
 
       // Opening-guide feedback (read from the live game, before we commit).
-      const expected = openingGuide ? nextBookMove(gameRef.current, opening) : null;
       const fenBefore = gameRef.current.fen();
+      const bookBefore = openingGuide ? bookMovesAtFen(fenBefore, opening) : [];
 
       // Optimistic commit — a real engine eval takes time, so we can't block
       // the drop on it. The cp-loss verdict arrives async below and, if bad
@@ -680,11 +774,18 @@ export default function ChessTrainer() {
       let msg = result.captured
         ? `Nice — you won a ${PIECE_NAME[result.captured]}. Keep your pieces coordinated.`
         : "Solid. The bot is thinking…";
-      if (expected) {
-        msg =
-          result.san === expected.san
+      if (bookBefore.length) {
+        // A move is "in book" if it's ANY of the tree's continuations here —
+        // playing a valid sideline no longer counts as leaving the book.
+        const played = bookBefore.find((e) => e.san === result.san);
+        if (played) {
+          msg = played.main
             ? `📖 On book — ${result.san} is the ${opening} main line. Bot to reply…`
-            : `You left the ${opening} book (main line was ${expected.san}). Own your plan — bot to reply…`;
+            : `📖 A known ${opening} sideline — ${result.san}. Still in book; bot to reply…`;
+        } else {
+          const mainMove = pickBookMove(bookBefore);
+          msg = `You left the ${opening} book (main line was ${mainMove?.san ?? "?"}). Own your plan — bot to reply…`;
+        }
       }
       setCoach(msg);
 
@@ -1122,10 +1223,10 @@ export default function ChessTrainer() {
               </label>
               <select
                 value={opening}
-                onChange={(e) => setOpening(e.target.value as keyof typeof OPENINGS)}
+                onChange={(e) => setOpening(e.target.value as keyof typeof OPENING_LINES)}
                 className="mb-4 w-full rounded-lg border border-slate-800 bg-slate-800/60 px-3 py-2 text-sm text-slate-200 outline-none transition-colors focus:border-emerald-500/50"
               >
-                {Object.keys(OPENINGS).map((o) => (
+                {Object.keys(OPENING_LINES).map((o) => (
                   <option key={o} value={o}>
                     {o}
                   </option>
@@ -1217,7 +1318,14 @@ export default function ChessTrainer() {
                   <span>
                     <span className="font-semibold">{opening}</span> — play{" "}
                     <span className="font-mono font-semibold text-emerald-100">{bookHint.san}</span> to stay in
-                    book (green arrow).
+                    book (green arrow)
+                    {bookHint.alts > 0 && (
+                      <span className="text-emerald-300/80">
+                        {" "}
+                        · +{bookHint.alts} book {bookHint.alts === 1 ? "sideline" : "sidelines"}
+                      </span>
+                    )}
+                    .
                   </span>
                 </div>
               )}
