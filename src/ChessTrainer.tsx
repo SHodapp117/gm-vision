@@ -19,160 +19,20 @@ import {
 } from "lucide-react";
 import { getEngine, parseUciMove, isSuperseded, type EngineLine } from "./engine/stockfish";
 import { evaluateMove, type MoveEvaluation, type MoveQuality } from "./engine/classify";
+import {
+  PIECE_VALUE,
+  PIECE_NAME,
+  buildAttackMap,
+  findHangingPieces,
+} from "./game/boardAnalysis";
+import {
+  OPENING_LINES,
+  bookMovesAtFen,
+  pickBookMove,
+  nextBookMove,
+  type BookHint,
+} from "./game/openings";
 import EvalBar from "./components/EvalBar";
-
-/* ------------------------------------------------------------------ */
-/*  Static config                                                      */
-/* ------------------------------------------------------------------ */
-
-const PIECE_VALUE: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
-
-// Each opening is authored as a MAIN line (index 0) plus a few variation lines,
-// all validated move-by-move against chess.js. They're compiled below into a
-// POSITION-KEYED book, so the guide and bot look up the current position rather
-// than tracking one linear line — sidelines and transpositions just work
-// instead of dead-ending the guide.
-const OPENING_LINES: Record<string, string[][]> = {
-  "Ruy Lopez": [
-    ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6", "c3", "O-O"],
-    ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Bxc6", "dxc6", "O-O", "f6", "d4", "exd4", "Qxd4", "Qxd4", "Nxd4"],
-    ["e4", "e5", "Nf3", "Nc6", "Bb5", "Nf6", "O-O", "Nxe4", "d4", "Nd6", "Bxc6", "dxc6", "dxe5", "Nf5", "Qxd8+", "Kxd8"],
-    ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "O-O", "c3", "d5", "exd5", "Nxd5"],
-  ],
-  "Italian Game": [
-    ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O", "a4", "a5"],
-    ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "Ng5", "d5", "exd5", "Na5", "Bb5+", "c6", "dxc6", "bxc6", "Be2", "h6"],
-    ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "b4", "Bxb4", "c3", "Ba5", "d4", "exd4", "O-O"],
-    ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+", "Nc3", "Nxe4"],
-  ],
-  "Scotch Game": [
-    ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Nf6", "Nxc6", "bxc6", "e5", "Qe7", "Qe2", "Nd5"],
-    ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Bc5", "Be3", "Qf6", "c3", "Nge7", "Bc4", "Ne5"],
-    ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Nf6", "Nxc6", "bxc6", "e5", "Qe7", "Qe2", "Nd5", "c4", "Ba6"],
-  ],
-  "Vienna Game": [
-    ["e4", "e5", "Nc3", "Nf6", "f4", "d5", "fxe5", "Nxe4", "Nf3", "Be7", "d3", "Nxc3"],
-    ["e4", "e5", "Nc3", "Nf6", "f4", "d5", "fxe5", "Nxe4", "Nf3", "Bg4", "Qe2", "Nxc3", "dxc3"],
-    ["e4", "e5", "Nc3", "Nf6", "Bc4", "Nc6", "d3", "Bb4", "Bg5", "h6"],
-  ],
-  "Sicilian Najdorf": [
-    ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be2", "e5", "Nb3", "Be7", "O-O", "O-O"],
-    ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be3", "e5", "Nb3", "Be6"],
-    ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Bg5", "e6", "f4", "Be7"],
-  ],
-  "French Defense": [
-    ["e4", "e6", "d4", "d5", "Nc3", "Nf6", "Bg5", "Be7", "e5", "Nfd7", "Bxe7", "Qxe7", "f4", "a6", "Nf3", "c5"],
-    ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+", "bxc3", "Ne7"],
-    ["e4", "e6", "d4", "d5", "e5", "c5", "c3", "Nc6", "Nf3", "Qb6"],
-    ["e4", "e6", "d4", "d5", "Nd2", "Nf6", "e5", "Nfd7", "Bd3", "c5", "c3", "Nc6"],
-  ],
-  "Caro-Kann": [
-    ["e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Bf5", "Ng3", "Bg6", "h4", "h6", "Nf3", "Nd7"],
-    ["e4", "c6", "d4", "d5", "e5", "Bf5", "Nf3", "e6", "Be2", "c5"],
-    ["e4", "c6", "d4", "d5", "exd5", "cxd5", "Bd3", "Nc6", "c3", "Nf6"],
-    ["e4", "c6", "d4", "d5", "exd5", "cxd5", "c4", "Nf6", "Nc3", "e6"],
-  ],
-  "Scandinavian": [
-    ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6", "Nf3", "c6", "Bc4", "Bf5", "Bd2", "e6"],
-    ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qd6", "d4", "Nf6", "Nf3", "a6"],
-    ["e4", "d5", "exd5", "Nf6", "d4", "Nxd5", "Nf3", "g6"],
-  ],
-  "Pirc Defense": [
-    ["e4", "d6", "d4", "Nf6", "Nc3", "g6", "f4", "Bg7", "Nf3", "O-O", "Be2", "c5"],
-    ["e4", "d6", "d4", "Nf6", "Nc3", "g6", "Nf3", "Bg7", "Be2", "O-O", "O-O"],
-    ["e4", "d6", "d4", "Nf6", "Nc3", "g6", "Be3", "Bg7", "Qd2", "c6"],
-  ],
-  "Queen's Gambit Declined": [
-    ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O", "Nf3", "h6", "Bh4", "b6"],
-    ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "cxd5", "exd5", "Bg5", "Be7", "e3", "O-O"],
-    ["d4", "d5", "c4", "e6", "Nc3", "c5", "cxd5", "exd5", "Nf3", "Nc6"],
-    ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Nf3", "c6", "Bg5", "h6", "Bh4", "dxc4"],
-  ],
-  "Slav Defense": [
-    ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "dxc4", "a4", "Bf5", "e3", "e6", "Bxc4", "Bb4"],
-    ["d4", "d5", "c4", "c6", "cxd5", "cxd5", "Nc3", "Nf6", "Nf3", "Nc6"],
-    ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "e6", "e3", "Nbd7"],
-  ],
-  "King's Indian Defense": [
-    ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "Nf3", "O-O", "Be2", "e5", "O-O", "Nc6"],
-    ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "Nf3", "O-O", "g3", "d6", "Bg2", "Nbd7"],
-    ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "f3", "O-O", "Be3", "e5"],
-    ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "f4", "O-O", "Nf3", "c5"],
-  ],
-  "Nimzo-Indian Defense": [
-    ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "e3", "O-O", "Bd3", "d5", "Nf3", "c5", "O-O", "Nc6"],
-    ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "Qc2", "O-O", "a3", "Bxc3+", "Qxc3", "b6"],
-    ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "Nf3", "c5", "g3", "cxd4"],
-    ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "Bg5", "h6", "Bh4", "c5"],
-  ],
-  "London System": [
-    ["d4", "d5", "Nf3", "Nf6", "Bf4", "e6", "e3", "c5", "c3", "Nc6", "Nbd2", "Bd6", "Bg3", "O-O"],
-    ["d4", "Nf6", "Nf3", "g6", "Bf4", "Bg7", "e3", "O-O", "Be2", "d6", "h3"],
-    ["d4", "d5", "Nf3", "Nf6", "Bf4", "c5", "e3", "Qb6", "Nc3", "c4"],
-  ],
-  "English Opening": [
-    ["c4", "e5", "Nc3", "Nf6", "Nf3", "Nc6", "g3", "d5", "cxd5", "Nxd5", "Bg2", "Nb6", "O-O", "Be7"],
-    ["c4", "c5", "Nc3", "Nc6", "g3", "g6", "Bg2", "Bg7", "Nf3", "Nf6", "O-O", "O-O"],
-    ["c4", "e5", "Nc3", "Nf6", "Nf3", "Nc6", "e3", "Bb4"],
-    ["c4", "Nf6", "Nc3", "g6", "g3", "Bg7", "Bg2", "O-O"],
-  ],
-};
-
-/** Position key: FEN without the half/full-move clocks, so transpositions match. */
-const posKey = (fen: string): string => fen.split(" ").slice(0, 4).join(" ");
-
-interface BookMove {
-  san: string;
-  from: Square;
-  to: Square;
-  piece: string; // moving piece type — drives the guide arrow hue
-  main: boolean; // belongs to the opening's main line (line 0)
-}
-type BookMap = Record<string, BookMove[]>;
-
-/** Replay every authored line and index each position → the book moves from it. */
-function compileOpening(lines: string[][]): BookMap {
-  const map: BookMap = {};
-  lines.forEach((line, lineIdx) => {
-    const g = new Chess();
-    for (const san of line) {
-      const key = posKey(g.fen());
-      let mv;
-      try {
-        mv = g.move(san);
-      } catch {
-        break; // lines are pre-validated, but never trust — bail this line
-      }
-      if (!mv) break;
-      const entry = (map[key] ||= []);
-      if (!entry.some((e) => e.san === mv.san)) {
-        entry.push({ san: mv.san, from: mv.from, to: mv.to, piece: mv.piece, main: lineIdx === 0 });
-      }
-    }
-  });
-  return map;
-}
-
-const OPENING_BOOKS: Record<string, BookMap> = Object.fromEntries(
-  Object.entries(OPENING_LINES).map(([name, lines]) => [name, compileOpening(lines)])
-);
-
-/** Book moves known at this position for the given opening ([] if out of book). */
-function bookMovesAtFen(fen: string, opening: string): BookMove[] {
-  return OPENING_BOOKS[opening]?.[posKey(fen)] ?? [];
-}
-
-/** The main-preferred book move from a set of entries. */
-function pickBookMove(entries: BookMove[]): BookMove | null {
-  if (!entries.length) return null;
-  return entries.find((e) => e.main) ?? entries[0];
-}
-
-const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"];
-
-const PIECE_NAME: Record<string, string> = {
-  p: "Pawn", n: "Knight", b: "Bishop", r: "Rook", q: "Queen", k: "King",
-};
 
 /* Electric, high-voltage vision palette (neon over slate squares). */
 const ELECTRIC = {
@@ -215,109 +75,6 @@ function controlOf(
   if (p && o) return { kind: "contested", color: CYBER_CONTESTED(alpha) };
   if (o) return { kind: "enemy", color: CYBER_ENEMY(alpha) };
   return { kind: "mine", color: CYBER_MINE(alpha) };
-}
-
-/* ------------------------------------------------------------------ */
-/*  Board-control / attack helpers (geometry, not legal-move based)    */
-/*                                                                     */
-/*  Returns a map: squareName -> array of attacker piece types.        */
-/*  "Control" includes defended own pieces (sliders stop AT the first  */
-/*  occupied square, which is still counted as controlled).            */
-/* ------------------------------------------------------------------ */
-
-type AttackMap = Record<string, string[]>;
-
-const KNIGHT_OFFSETS = [
-  [-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1],
-];
-const KING_OFFSETS = [
-  [-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1],
-];
-const BISHOP_DIRS = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
-const ROOK_DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-
-const sqName = (r: number, c: number) => `${FILES[c]}${8 - r}`;
-const inBounds = (r: number, c: number) => r >= 0 && r < 8 && c >= 0 && c < 8;
-
-function buildAttackMap(game: Chess, color: "w" | "b"): AttackMap {
-  const board = game.board(); // board[0] = rank 8, [7] = rank 1
-  const map: AttackMap = {};
-  const add = (r: number, c: number, type: string) => {
-    if (!inBounds(r, c)) return;
-    const key = sqName(r, c);
-    (map[key] ||= []).push(type);
-  };
-
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
-      const piece = board[r][c];
-      if (!piece || piece.color !== color) continue;
-
-      switch (piece.type) {
-        case "p": {
-          const dir = color === "w" ? -1 : 1; // white advances toward rank 8 (lower r)
-          add(r + dir, c - 1, "p");
-          add(r + dir, c + 1, "p");
-          break;
-        }
-        case "n":
-          KNIGHT_OFFSETS.forEach(([dr, dc]) => add(r + dr, c + dc, "n"));
-          break;
-        case "k":
-          KING_OFFSETS.forEach(([dr, dc]) => add(r + dr, c + dc, "k"));
-          break;
-        case "b":
-        case "r":
-        case "q": {
-          const dirs =
-            piece.type === "b"
-              ? BISHOP_DIRS
-              : piece.type === "r"
-              ? ROOK_DIRS
-              : [...BISHOP_DIRS, ...ROOK_DIRS];
-          dirs.forEach(([dr, dc]) => {
-            let nr = r + dr;
-            let nc = c + dc;
-            while (inBounds(nr, nc)) {
-              add(nr, nc, piece.type);
-              if (board[nr][nc]) break; // stop at first occupied square (still controlled)
-              nr += dr;
-              nc += dc;
-            }
-          });
-          break;
-        }
-      }
-    }
-  }
-  return map;
-}
-
-/** Squares where `color` has a hanging piece (attacked & (undefended OR by lower value)). */
-function findHangingPieces(game: Chess, color: "w" | "b") {
-  const board = game.board();
-  const oppMap = buildAttackMap(game, color === "w" ? "b" : "w");
-  const ownMap = buildAttackMap(game, color);
-  const hanging: { square: string; type: string; minAttacker: number; defended: boolean }[] = [];
-
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
-      const piece = board[r][c];
-      if (!piece || piece.color !== color || piece.type === "k") continue;
-      const name = sqName(r, c);
-      const attackers = oppMap[name];
-      if (!attackers?.length) continue;
-
-      const minAttacker = Math.min(...attackers.map((t) => PIECE_VALUE[t]));
-      const defended = !!ownMap[name]?.length;
-      const pieceVal = PIECE_VALUE[piece.type];
-
-      if (!defended || minAttacker < pieceVal) {
-        hanging.push({ square: name, type: piece.type, minAttacker, defended });
-      }
-    }
-  }
-  return hanging;
 }
 
 /* ------------------------------------------------------------------ */
@@ -400,26 +157,6 @@ function formatEvalForCoach(line: EngineLine | undefined): string {
   if (line.cp === undefined) return "";
   const pawns = (line.cp / 100).toFixed(1);
   return ` (eval ${line.cp >= 0 ? "+" : ""}${pawns})`;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Opening book — the next main-line move for the side to move.       */
-/* ------------------------------------------------------------------ */
-
-interface BookHint {
-  from: Square;
-  to: Square;
-  san: string;
-  piece: string; // moving piece type — drives the arrow hue
-  alts: number; // how many OTHER book moves exist at this position
-}
-
-/** The main-preferred book move at the CURRENT position (null if out of book). */
-function nextBookMove(game: Chess, openingName: string): BookHint | null {
-  const entries = bookMovesAtFen(game.fen(), openingName);
-  const pick = pickBookMove(entries);
-  if (!pick) return null;
-  return { from: pick.from, to: pick.to, san: pick.san, piece: pick.piece, alts: entries.length - 1 };
 }
 
 /* ------------------------------------------------------------------ */
