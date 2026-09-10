@@ -179,57 +179,14 @@ const ELECTRIC = {
   lastFill: "rgba(179, 102, 255, 0.30)", // electric violet — last move
   lastRing: "rgba(179, 102, 255, 0.75)",
 };
-/* ------------------------------------------------------------------ */
-/*  Team color theory — side-based brand palettes.                     */
-/*                                                                     */
-/*  YOU always play in a cool Pacific-NW ramp; the BOT always plays in */
-/*  a warm cyberpunk ramp. Within a side, piece type is placed along   */
-/*  that side's 3-color ramp (pawn → king), so you still read WHICH    */
-/*  piece controls a square while side identity is instant (cool vs    */
-/*  warm). Opacity encodes control density (more attackers → vivid).   */
-/*  A value-tie between sides is a standoff → neutral silver.          */
-/* ------------------------------------------------------------------ */
-
-// YOU: cool Pacific-NW nature ramp. BOT: "Ultraviolet Plasma" — a synthetic
-// neon violet→magenta→pink arc that lives entirely outside the player's cool
-// gamut and the danger red, so the two sides never read alike.
-const PLAYER_RAMP = ["#55cc21", "#7cd3d3", "#3151bf"]; // Rave Green → Heritage Aqua → Pacific Blue
-const ENEMY_RAMP = ["#6a00f4", "#c400e0", "#ff2fb0"]; // Neon Violet → Neon Magenta → Hot Pink
-const PIECE_ORDER = ["p", "n", "b", "r", "q", "k"]; // ramp position, cheapest → richest
-
 // In-danger pieces: Hong-Kong-neon red, uniform (danger = red, universally).
 const DANGER = "#ff073a";
 
-const hexToRgb = (hex: string): [number, number, number] => {
-  const n = parseInt(hex.slice(1), 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-};
-
-/** Sample a multi-stop color ramp at t ∈ [0,1]. */
-function rampRgb(ramp: string[], t: number): [number, number, number] {
-  const seg = Math.max(0, Math.min(1, t)) * (ramp.length - 1);
-  const i = Math.min(ramp.length - 2, Math.floor(seg));
-  const f = seg - i;
-  const a = hexToRgb(ramp[i]);
-  const b = hexToRgb(ramp[i + 1]);
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * f),
-    Math.round(a[1] + (b[1] - a[1]) * f),
-    Math.round(a[2] + (b[2] - a[2]) * f),
-  ];
-}
-
-/** Brand color for a piece on a given side, at an opacity. */
-function pieceColor(side: "you" | "enemy", type: string, alpha = 1): string {
-  const t = Math.max(0, PIECE_ORDER.indexOf(type)) / (PIECE_ORDER.length - 1);
-  const [r, g, b] = rampRgb(side === "you" ? PLAYER_RAMP : ENEMY_RAMP, t);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-// Suggestion arrows (always the player's moves) use the player ramp;
-// best-move rank is encoded by opacity so same-piece candidates stay distinct.
+// Player suggestion arrows (best moves + the opening-guide book move) are all
+// electric blue — the same "you" color as the control heatmap. Best-move rank
+// is encoded by opacity so the top pick reads brightest.
 const BEST_ARROW_ALPHA = [0.95, 0.7, 0.5];
-const arrowColor = (pieceType: string, alpha = 1) => pieceColor("you", pieceType, alpha);
+const arrowColor = (alpha = 1) => `rgba(0, 179, 255, ${alpha})`; // electric blue (matches CYBER_MINE)
 
 /* ------------------------------------------------------------------ */
 /*  Control heatmap — cyberpunk neon triad (side-based, toggleable).   */
@@ -1027,14 +984,13 @@ export default function ChessTrainer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fen, started, blunder, openingGuide, playerColor, opening]);
 
-  // Board arrows, unified to the piece-hue language: every arrow is colored by
-  // its moving piece. Best-move rank is encoded by opacity; the book move is
-  // drawn at full strength.
+  // Board arrows are all electric blue (the "you" color). Best-move rank is
+  // encoded by opacity; the opening-guide book move is drawn at full strength.
   const arrows = useMemo(() => {
     const list: [Square, Square, string][] = bestMoves
       .slice(0, 3)
-      .map((m, i) => [m.from, m.to, arrowColor(m.piece, BEST_ARROW_ALPHA[i])]);
-    if (bookHint) list.unshift([bookHint.from, bookHint.to, arrowColor(bookHint.piece)]);
+      .map((m, i) => [m.from, m.to, arrowColor(BEST_ARROW_ALPHA[i])]);
+    if (bookHint) list.unshift([bookHint.from, bookHint.to, arrowColor()]);
     return list;
   }, [bestMoves, bookHint]);
 

@@ -13,7 +13,7 @@ A modern, browser-based React chess training app that visualizes **board control
   - **Threats** — any of your hanging pieces (attacked by a lower-value piece, or undefended) gets a Hong-Kong-neon-red ring (`#FF073A`) with a subtle heartbeat "beat" — danger reads as red, universally, and the motion draws the eye.
   - **Last move** — the from/to squares of the most recent move, ringed in violet.
 - **Real Stockfish engine** — the bot, the eval bar, best-moves, and blunder detection are all powered by a bundled Stockfish WASM engine (see below).
-- **Best Moves** — one click asks the engine for its top three lines and draws them as neon arrows colored by the moving piece, with a short reason + evaluation in the coach panel.
+- **Best Moves** — one click asks the engine for its top three lines and draws them as electric-blue arrows (the "you" color; top pick brightest), with a short reason + evaluation in the coach panel.
 - **Blunder correction, with player override** — the engine flags real mistakes/blunders (by centipawn loss); the game pauses and a modal explains *why*. You decide: **Undo & Retry**, or **Play it anyway** — the coach only advises, the player always has the final word.
 - **Tactics trainer** — a Puzzles mode with ~5,000 curated Lichess puzzles, a local tactics rating, streaks, theme/difficulty filters, and hints (see below).
 - **Coach's feedback** panel, PGN-style move history, and a glassmorphism control panel with a dark-mode-first, Vercel/Linear-inspired aesthetic.
