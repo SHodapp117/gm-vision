@@ -8,6 +8,7 @@ A modern, browser-based React chess training app that visualizes **board control
 
 - **Pre-game setup** — play as White or Black, a bot ELO slider (600–3200), and a 15-opening selector (Ruy Lopez, Italian, Scotch, Vienna, Sicilian Najdorf, French, Caro-Kann, Scandinavian, Pirc, Queen's Gambit Declined, Slav, King's Indian, Nimzo-Indian, London, English). Every main line is validated move-by-move against chess.js.
 - **Training positions — start anywhere.** A game doesn't have to begin from move one. Pick a **start position**: *Standard*, *Mid-opening* (seed the board 3/5/7/9 full moves into the chosen opening's main line, then play on — the position-keyed guide keeps working from there), or *From FEN* (paste any position; it's validated before you start). All entry points flow through one `TrainingPosition` abstraction into the *same* game engine, so coaching, vision, and the bot all work identically no matter where you started.
+- **Move Guidance (opt-in).** Flip it on and click one of your pieces: the coach ranks *that piece's* legal moves best→worst — **Best / Excellent / Good / Playable / Inaccuracy / Mistake / Blunder** — each with a one-line reason ("Wins the Knight", "Develops the Bishop", "Threatens the Rook on d8"). Powered by a single engine MultiPV pass scored by eval-loss vs. the best move on the board (near-equal moves aren't split hairs over). Off by default — the board behaves normally — and it only advises; you still play any legal move you like.
 - **Opening Guide with variation trees** — a toggle that walks *you* through the chosen opening. Each opening is a **branching tree** (a main line plus real variations), compiled into a position-keyed book — so a green arrow shows your book move (for either color), the banner counts how many book sidelines exist here, and playing a valid sideline keeps you *in book* instead of dead-ending. Transpositions resolve automatically (the book is keyed by position, not move order). The bot follows the same tree, so you can rehearse full lines — and their sidelines — against it.
 - **Electric vision layers** — three independently toggleable overlays in high-voltage neon:
   - **Control heatmap** — a neon cyberpunk triad showing who controls each square: **your control = electric blue** (`#00B3FF`), **CPU control = electric pink** (`#FF2DD2`), and **contested squares = electric green** (`#39FF14`). Opacity scales with control density (more attackers → more vivid). The three colors are **independent toggles** (You / CPU / Contested), all on by default, so you can isolate, say, just the CPU's coverage to spot where it's pressing.
@@ -74,10 +75,11 @@ bands and themes. It tracks an Elo-style tactics rating and streak in
 
 ```
 src/
-  App.tsx            # top-level shell + Play/Puzzles mode switcher
-  ChessTrainer.tsx   # the Play trainer (board, vision, opening guide, blunder logic)
-  PuzzleTrainer.tsx  # the tactics/puzzle mode
-  engine/            # Stockfish worker wrapper + move classification
+  App.tsx            # top-level shell + Play/Puzzles switcher + puzzle→Play handoff
+  ChessTrainer.tsx   # the Play trainer (board, vision, guide, radar, move guidance)
+  PuzzleTrainer.tsx  # the tactics/puzzle mode (+ "Play from here")
+  engine/            # Stockfish wrapper, move classification, tactics detector, move explorer
+  game/              # shared chess layer: board analysis, opening book, TrainingPosition
   components/        # EvalBar, Credits
   puzzles/           # puzzle selection + rating store
   data/puzzles.json  # curated CC0 puzzle dataset

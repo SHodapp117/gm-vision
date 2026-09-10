@@ -48,6 +48,12 @@ import {
   validateFen,
   type TrainingPosition,
 } from "./game/trainingPosition";
+import {
+  rankPieceMoves,
+  CATEGORY_LABEL,
+  type ExploredMove,
+  type MoveCategory,
+} from "./engine/moveExplorer";
 import EvalBar from "./components/EvalBar";
 
 /* Electric, high-voltage vision palette (neon over slate squares). */
@@ -287,6 +293,26 @@ function tacticStyle(t: TacticalOpportunity): {
   return { Icon: Pin, icon: "text-violet-300", box: "border-violet-400/40 bg-violet-400/10", text: "text-violet-100" };
 }
 
+/** Move Explorer — pill styling per move-quality category. */
+function categoryStyle(cat: MoveCategory): { pill: string; text: string } {
+  switch (cat) {
+    case "best":
+      return { pill: "border-emerald-400/50 bg-emerald-400/15 text-emerald-200", text: "text-emerald-100" };
+    case "excellent":
+      return { pill: "border-teal-400/50 bg-teal-400/15 text-teal-200", text: "text-teal-100" };
+    case "good":
+      return { pill: "border-lime-400/50 bg-lime-400/15 text-lime-200", text: "text-lime-100" };
+    case "playable":
+      return { pill: "border-slate-500/50 bg-slate-600/25 text-slate-200", text: "text-slate-300" };
+    case "inaccuracy":
+      return { pill: "border-amber-400/50 bg-amber-400/15 text-amber-200", text: "text-amber-100" };
+    case "mistake":
+      return { pill: "border-orange-400/50 bg-orange-400/15 text-orange-200", text: "text-orange-100" };
+    default:
+      return { pill: "border-rose-500/50 bg-rose-500/15 text-rose-200", text: "text-rose-100" };
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
@@ -334,6 +360,12 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
   const [showTactics, setShowTactics] = useState(true);
   const [tactics, setTactics] = useState<TacticalOpportunity[]>([]);
   const [tacticsScanning, setTacticsScanning] = useState(false);
+
+  // Move Guidance (opt-in) — click a piece to see its legal moves ranked
+  // best→worst with a reason each. Off by default: the board is unchanged.
+  const [showGuidance, setShowGuidance] = useState(false);
+  const [guidanceMoves, setGuidanceMoves] = useState<ExploredMove[]>([]);
+  const [guidanceLoading, setGuidanceLoading] = useState(false);
 
   // Coach + blunder flow
   const [coach, setCoach] = useState("Configure your session and press Start Training.");
@@ -543,6 +575,53 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fen, started, showTactics, blunder, checkingMove, playerColor]);
+
+  // Move Guidance — when a friendly piece is selected (and guidance is on), rank
+  // its legal moves via the engine. Reuses the existing click-to-move selection,
+  // so clicking a piece both highlights its targets and ranks its options.
+  useEffect(() => {
+    if (!started || !showGuidance || !selectedSquare || blunder || checkingMove) {
+      setGuidanceMoves([]);
+      setGuidanceLoading(false);
+      return;
+    }
+    const g = gameRef.current;
+    if (g.turn() !== playerColor || g.isGameOver()) {
+      setGuidanceMoves([]);
+      return;
+    }
+    const piece = g.get(selectedSquare);
+    if (!piece || piece.color !== playerColor) {
+      setGuidanceMoves([]);
+      return;
+    }
+
+    const scanFen = g.fen();
+    setGuidanceMoves([]);
+    setGuidanceLoading(true);
+    let cancelled = false;
+    rankPieceMoves({
+      analyze: (f, opts) => getEngine().analyze(f, opts),
+      fen: scanFen,
+      square: selectedSquare,
+      movetime: 700,
+    })
+      .then((moves) => {
+        if (cancelled || gameRef.current.fen() !== scanFen) return;
+        setGuidanceMoves(moves);
+      })
+      .catch(() => {
+        // Superseded by a newer position / engine unavailable — leave it empty.
+      })
+      .finally(() => {
+        if (!cancelled) setGuidanceLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSquare, showGuidance, fen, started, playerColor, blunder, checkingMove]);
 
   /* ---- Commit a move to the real game ------------------------------ */
   const commitMove = useCallback(
@@ -1337,6 +1416,72 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
                 <p className="mt-3 text-[11px] text-slate-600">
                   The coach names the chance — you find the move.
                 </p>
+              </section>
+            )}
+
+            {/* Move Guidance — rank the selected piece's legal moves (opt-in) */}
+            {started && (
+              <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 backdrop-blur-xl">
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+                    <Lightbulb className="h-4 w-4 text-emerald-400" /> Move Guidance
+                  </h2>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={showGuidance}
+                    aria-label="Toggle move guidance"
+                    onClick={() => setShowGuidance((v) => !v)}
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                      showGuidance ? "bg-emerald-500" : "bg-slate-700"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+                        showGuidance ? "left-[18px]" : "left-0.5"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {!showGuidance ? (
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    Off — the board behaves normally. Turn this on, then click one of your pieces to see its
+                    legal moves ranked best→worst with a reason each.
+                  </p>
+                ) : guidanceLoading ? (
+                  <p className="flex items-center gap-2 text-xs text-slate-500">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" /> Coach is weighing
+                    your options…
+                  </p>
+                ) : guidanceMoves.length ? (
+                  <ul className="flex max-h-64 flex-col gap-1.5 overflow-y-auto pr-1">
+                    {guidanceMoves.map((m) => {
+                      const s = categoryStyle(m.category);
+                      return (
+                        <li
+                          key={m.uci}
+                          className="flex items-start gap-2.5 rounded-lg border border-slate-800 bg-slate-950/50 px-2.5 py-2"
+                        >
+                          <span
+                            className={`mt-0.5 shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${s.pill}`}
+                          >
+                            {CATEGORY_LABEL[m.category]}
+                          </span>
+                          <span className="min-w-0">
+                            <span className={`font-mono text-sm font-semibold ${s.text}`}>{m.san}</span>
+                            <span className="ml-2 text-xs text-slate-400">{m.reason}</span>
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    Click one of your pieces to rank its moves. You can still play any legal move — this only
+                    advises.
+                  </p>
+                )}
               </section>
             )}
 
