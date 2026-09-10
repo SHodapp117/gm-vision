@@ -112,7 +112,12 @@ export default function PuzzleTrainer() {
   useEffect(() => {
     const el = boardWrapRef.current;
     if (!el) return;
-    const update = () => setBoardWidth(el.clientWidth);
+    // Ignore transient 0-width measurements (hidden pane / lazy-load mount
+    // race) so the board never latches to 0 and renders blank.
+    const update = () => {
+      const w = el.clientWidth;
+      if (w > 0) setBoardWidth(w);
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(el);

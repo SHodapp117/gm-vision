@@ -563,7 +563,12 @@ export default function ChessTrainer() {
   useEffect(() => {
     const el = boardWrapRef.current;
     if (!el) return;
-    const update = () => setBoardWidth(el.clientWidth);
+    // Ignore transient 0-width measurements (hidden pane / mount race) so the
+    // board never latches to 0 and renders blank — keep the last good width.
+    const update = () => {
+      const w = el.clientWidth;
+      if (w > 0) setBoardWidth(w);
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(el);
@@ -987,10 +992,18 @@ export default function ChessTrainer() {
   // Board arrows are all electric blue (the "you" color). Best-move rank is
   // encoded by opacity; the opening-guide book move is drawn at full strength.
   const arrows = useMemo(() => {
-    const list: [Square, Square, string][] = bestMoves
-      .slice(0, 3)
-      .map((m, i) => [m.from, m.to, arrowColor(BEST_ARROW_ALPHA[i])]);
-    if (bookHint) list.unshift([bookHint.from, bookHint.to, arrowColor()]);
+    // Dedupe by from→to: react-chessboard keys arrows on their squares, so the
+    // book move and a best-move suggestion for the same move must not both add.
+    const seen = new Set<string>();
+    const list: [Square, Square, string][] = [];
+    const add = (from: Square, to: Square, color: string) => {
+      const key = `${from}-${to}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      list.push([from, to, color]);
+    };
+    if (bookHint) add(bookHint.from, bookHint.to, arrowColor());
+    bestMoves.slice(0, 3).forEach((m, i) => add(m.from, m.to, arrowColor(BEST_ARROW_ALPHA[i])));
     return list;
   }, [bestMoves, bookHint]);
 
