@@ -231,25 +231,33 @@ function pieceColor(side: "you" | "enemy", type: string, alpha = 1): string {
 const BEST_ARROW_ALPHA = [0.95, 0.7, 0.5];
 const arrowColor = (pieceType: string, alpha = 1) => pieceColor("you", pieceType, alpha);
 
-const lowestValueType = (types: string[]): string =>
-  types.reduce((best, t) => (PIECE_VALUE[t] < PIECE_VALUE[best] ? t : best), types[0]);
+/* ------------------------------------------------------------------ */
+/*  Control heatmap — cyberpunk neon triad (side-based, toggleable).   */
+/*  YOU = electric blue, CPU = electric pink, contested = electric      */
+/*  green. Opacity scales with control density (more attackers → vivid).*/
+/* ------------------------------------------------------------------ */
 
-/** Heatmap color for a square, from who attacks it (piece types per side). */
-function controlColor(yourTypes: string[] | undefined, enemyTypes: string[] | undefined): string | null {
-  const yours = yourTypes ?? [];
-  const enemies = enemyTypes ?? [];
-  const density = yours.length + enemies.length;
+const CYBER_MINE = (a: number) => `rgba(0, 179, 255, ${a})`; // electric blue — your control
+const CYBER_ENEMY = (a: number) => `rgba(255, 45, 210, ${a})`; // electric pink — CPU control
+const CYBER_CONTESTED = (a: number) => `rgba(57, 255, 20, ${a})`; // electric green — contested
+// Solid swatch colors for the legend/toggles.
+const CYBER_SWATCH = { mine: "rgb(0, 179, 255)", enemy: "rgb(255, 45, 210)", contested: "rgb(57, 255, 20)" };
+
+type ControlKind = "mine" | "enemy" | "contested";
+
+/** Who holds a square (by attacker counts) + its neon fill; null if uncontrolled. */
+function controlOf(
+  yourTypes: string[] | undefined,
+  enemyTypes: string[] | undefined
+): { kind: ControlKind; color: string } | null {
+  const p = yourTypes?.length ?? 0;
+  const o = enemyTypes?.length ?? 0;
+  const density = p + o;
   if (density === 0) return null;
-
-  const alpha = Math.min(0.72, 0.32 + 0.11 * (density - 1)); // vibrancy ← density
-  const yourMinType = yours.length ? lowestValueType(yours) : null;
-  const enemyMinType = enemies.length ? lowestValueType(enemies) : null;
-  const yourMin = yourMinType ? PIECE_VALUE[yourMinType] : Infinity;
-  const enemyMin = enemyMinType ? PIECE_VALUE[enemyMinType] : Infinity;
-
-  if (yourMin === enemyMin) return `rgba(203, 213, 225, ${alpha})`; // standoff — silver
-  const you = yourMin < enemyMin;
-  return pieceColor(you ? "you" : "enemy", (you ? yourMinType : enemyMinType) as string, alpha);
+  const alpha = Math.min(0.62, 0.3 + 0.09 * (density - 1)); // vibrancy ← density
+  if (p && o) return { kind: "contested", color: CYBER_CONTESTED(alpha) };
+  if (o) return { kind: "enemy", color: CYBER_ENEMY(alpha) };
+  return { kind: "mine", color: CYBER_MINE(alpha) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -564,7 +572,10 @@ export default function ChessTrainer() {
   const [started, setStarted] = useState(false);
 
   // Training visuals — three independent vision layers
-  const [showControl, setShowControl] = useState(true); // control heatmap (colors)
+  // Control heatmap, split into three independently-toggleable neon layers.
+  const [showMine, setShowMine] = useState(true); // your control — electric blue
+  const [showEnemy, setShowEnemy] = useState(true); // CPU control — electric pink
+  const [showContested, setShowContested] = useState(true); // contested — electric green
   const [showAttacks, setShowAttacks] = useState(true); // under-attack markers
   const [showLast, setShowLast] = useState(true); // last-move highlight
   const [openingGuide, setOpeningGuide] = useState(true); // guide me through the book
@@ -929,14 +940,16 @@ export default function ChessTrainer() {
     if (!started) return {};
     const styles: Record<string, React.CSSProperties> = {};
 
-    // Layer 1 — control heatmap: hue = dominant piece, tone = side, alpha = density.
-    if (showControl) {
+    // Layer 1 — control heatmap: neon triad, each side independently toggled.
+    if (showMine || showEnemy || showContested) {
       const playerMap = buildAttackMap(gameRef.current, playerColor);
       const oppMap = buildAttackMap(gameRef.current, botColor);
       const all = new Set([...Object.keys(playerMap), ...Object.keys(oppMap)]);
       all.forEach((sq) => {
-        const color = controlColor(playerMap[sq], oppMap[sq]);
-        if (color) styles[sq] = { background: color };
+        const c = controlOf(playerMap[sq], oppMap[sq]);
+        if (!c) return;
+        const on = c.kind === "mine" ? showMine : c.kind === "enemy" ? showEnemy : showContested;
+        if (on) styles[sq] = { background: c.color };
       });
     }
 
@@ -1003,7 +1016,7 @@ export default function ChessTrainer() {
 
     return styles;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fen, showControl, showLast, showAttacks, started, playerColor, botColor, selectedSquare, selectionTargets]);
+  }, [fen, showMine, showEnemy, showContested, showLast, showAttacks, started, playerColor, botColor, selectedSquare, selectionTargets]);
 
   // Opening-guide hint — the book move for the player, while still in book.
   const bookHint = useMemo<BookHint | null>(() => {
@@ -1129,25 +1142,26 @@ export default function ChessTrainer() {
             </div>
 
             {/* Vision legend — mirrors the active layers */}
-            {started && (showControl || showAttacks || showLast || bestMoves.length > 0 || bookHint) && (
+            {started &&
+              (showMine || showEnemy || showContested || showAttacks || showLast || bestMoves.length > 0 || bookHint) && (
               <div className="mt-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs text-slate-400">
-                {showControl && (
-                  <span className="flex items-center gap-3">
-                    {(["you", "enemy"] as const).map((side) => (
-                      <span key={side} className="flex items-center gap-1">
-                        <span className="text-slate-500">{side === "you" ? "You" : "Bot"}</span>
-                        {PIECE_ORDER.map((t) => (
-                          <span
-                            key={t}
-                            title={`${side === "you" ? "Your" : "Bot"} ${PIECE_NAME[t]}`}
-                            className="h-3 w-3 rounded-sm"
-                            style={{ background: pieceColor(side, t, 0.95) }}
-                          />
-                        ))}
-                      </span>
-                    ))}
-                    <span className="text-slate-500">P→K · brighter = more attackers</span>
+                {showMine && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded-sm" style={{ background: CYBER_SWATCH.mine }} /> Your control
                   </span>
+                )}
+                {showEnemy && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded-sm" style={{ background: CYBER_SWATCH.enemy }} /> CPU control
+                  </span>
+                )}
+                {showContested && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded-sm" style={{ background: CYBER_SWATCH.contested }} /> Contested
+                  </span>
+                )}
+                {(showMine || showEnemy || showContested) && (
+                  <span className="text-slate-500">brighter = more attackers</span>
                 )}
                 {showAttacks && (
                   <span className="flex items-center gap-1.5">
@@ -1270,7 +1284,9 @@ export default function ChessTrainer() {
                 <div className="grid grid-cols-3 gap-2">
                   {(
                     [
-                      { on: showControl, set: setShowControl, label: "Heatmap", dot: "linear-gradient(90deg,#00ff9c,#00e0ff)", ring: "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" },
+                      { on: showMine, set: setShowMine, label: "You", dot: CYBER_SWATCH.mine, ring: "border-sky-400/50 bg-sky-400/10 text-sky-200" },
+                      { on: showEnemy, set: setShowEnemy, label: "CPU", dot: CYBER_SWATCH.enemy, ring: "border-pink-400/50 bg-pink-400/10 text-pink-200" },
+                      { on: showContested, set: setShowContested, label: "Contested", dot: CYBER_SWATCH.contested, ring: "border-lime-400/50 bg-lime-400/10 text-lime-200" },
                       { on: showAttacks, set: setShowAttacks, label: "Threats", dot: DANGER, ring: "border-rose-500/50 bg-rose-500/10 text-rose-200" },
                       { on: showLast, set: setShowLast, label: "Last move", dot: "#b366ff", ring: "border-violet-400/50 bg-violet-400/10 text-violet-200" },
                     ] as const
