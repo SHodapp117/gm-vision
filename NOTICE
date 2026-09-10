@@ -1,0 +1,53 @@
+GM Vision — THIRD-PARTY NOTICES
+================================
+
+GM Vision's own source code is licensed under the MIT License. This product
+also includes and relies on third-party software and data covered by the
+licenses below. Full details are in CREDITS.md.
+
+--------------------------------------------------------------------------------
+1. Stockfish — GNU GPL v3 (IMPORTANT)
+--------------------------------------------------------------------------------
+This product bundles a WebAssembly build of the Stockfish chess engine
+(public/engine/stockfish.wasm, public/engine/stockfish.js).
+
+  Stockfish is free software licensed under the GNU General Public License,
+  version 3 (GPL-3.0). It comes with ABSOLUTELY NO WARRANTY.
+
+  License text (bundled):  public/engine/LICENSE.stockfish.txt
+  Full license:            https://www.gnu.org/licenses/gpl-3.0.html
+  Corresponding source:    https://github.com/official-stockfish/Stockfish
+  Project home:            https://stockfishchess.org/
+
+--------------------------------------------------------------------------------
+2. Lichess open puzzle database — CC0 1.0
+--------------------------------------------------------------------------------
+Bundled puzzle content (~5,005 curated puzzles) is derived from the Lichess
+open puzzle database, dedicated to the public domain under CC0 1.0 Universal.
+
+  License:  https://creativecommons.org/publicdomain/zero/1.0/
+  Source:   https://database.lichess.org/
+
+  No attribution is legally required under CC0; credited with thanks.
+
+  With thanks to chessgo.in (https://chessgo.in/) for their collaboration
+  around chess puzzle content.
+
+--------------------------------------------------------------------------------
+3. Lichess Opening Explorer — data service
+--------------------------------------------------------------------------------
+This product queries the Lichess Opening Explorer (https://explorer.lichess.org/)
+for opening statistics. With thanks to Lichess (https://lichess.org/).
+
+--------------------------------------------------------------------------------
+4. Libraries
+--------------------------------------------------------------------------------
+  chess.js .............. BSD-2-Clause .. https://github.com/jhlywa/chess.js
+  react-chessboard ...... MIT ........... https://github.com/Clariity/react-chessboard
+  React / react-dom ..... MIT ........... https://react.dev/
+  lucide-react .......... ISC ........... https://lucide.dev/
+  Tailwind CSS .......... MIT ........... https://tailwindcss.com/
+  Vite .................. MIT ........... https://vite.dev/
+
+Each library's full license text is distributed with its package under
+node_modules/<package>/ and on npm.

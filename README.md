@@ -66,6 +66,30 @@ src/
   index.css          # Tailwind directives + base styles
 ```
 
+## Attribution & Licenses
+
+GM Vision is built on open-source software and openly-licensed chess data. The
+full breakdown — every component, its license identifier, and its source — lives
+in **[CREDITS.md](CREDITS.md)** (and a concise **[NOTICE](NOTICE)** file at the
+repo root). A few points that matter most:
+
+- **Stockfish (bundled engine) — GPL-3.0.** This app bundles a WebAssembly build
+  of [Stockfish](https://stockfishchess.org/), which is licensed under the
+  [GNU GPL v3](https://www.gnu.org/licenses/gpl-3.0.html). Its complete license
+  text ships at [`public/engine/LICENSE.stockfish.txt`](public/engine/LICENSE.stockfish.txt),
+  and the corresponding source is at
+  [official-stockfish/Stockfish](https://github.com/official-stockfish/Stockfish).
+  This is a license obligation, not a courtesy.
+- **Lichess puzzles — CC0 1.0.** The bundled puzzles come from the
+  [Lichess open puzzle database](https://database.lichess.org/) (public domain,
+  no attribution required — credited anyway). With thanks to
+  [chessgo.in](https://chessgo.in/) for their collaboration around chess puzzle
+  content.
+- **Lichess Opening Explorer.** Opening statistics come from
+  [explorer.lichess.org](https://explorer.lichess.org/). Thanks to Lichess.
+
 ## License
 
-MIT
+GM Vision's own source code is released under the **MIT License**. Bundled
+third-party components remain under their own licenses — most notably Stockfish,
+which stays under the **GNU GPL v3** (see above and [CREDITS.md](CREDITS.md)).
