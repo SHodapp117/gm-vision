@@ -18,6 +18,7 @@ import {
   Compass,
   Target,
   Pin,
+  Flag,
 } from "lucide-react";
 import { getEngine, parseUciMove, isSuperseded, type EngineLine } from "./engine/stockfish";
 import { evaluateMove, type MoveEvaluation, type MoveQuality } from "./engine/classify";
@@ -40,6 +41,13 @@ import {
   nextBookMove,
   type BookHint,
 } from "./game/openings";
+import {
+  standardPosition,
+  openingPosition,
+  fenPosition,
+  validateFen,
+  type TrainingPosition,
+} from "./game/trainingPosition";
 import EvalBar from "./components/EvalBar";
 
 /* Electric, high-voltage vision palette (neon over slate squares). */
@@ -283,7 +291,17 @@ function tacticStyle(t: TacticalOpportunity): {
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
 
-export default function ChessTrainer() {
+interface ChessTrainerProps {
+  /** A position to drop straight into a game (e.g. handed over from a puzzle). */
+  initialPosition?: TrainingPosition | null;
+  /** Called once an `initialPosition` has been consumed, so the parent can clear it. */
+  onConsumed?: () => void;
+}
+
+type StartMode = "standard" | "opening" | "fen";
+const OPENING_DEPTHS = [3, 5, 7, 9] as const;
+
+export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrainerProps = {}) {
   const gameRef = useRef(new Chess());
   const [fen, setFen] = useState(gameRef.current.fen());
   const [history, setHistory] = useState<string[]>([]);
@@ -293,6 +311,12 @@ export default function ChessTrainer() {
   const [elo, setElo] = useState(1500);
   const [opening, setOpening] = useState<keyof typeof OPENING_LINES>("Ruy Lopez");
   const [started, setStarted] = useState(false);
+
+  // Start position — a standard game, N moves into the opening, or a pasted FEN.
+  const [startMode, setStartMode] = useState<StartMode>("standard");
+  const [openingDepth, setOpeningDepth] = useState<number>(5);
+  const [fenInput, setFenInput] = useState("");
+  const [fenError, setFenError] = useState<string | null>(null);
 
   // Training visuals — three independent vision layers
   // Control heatmap, split into three independently-toggleable neon layers.
@@ -355,18 +379,56 @@ export default function ChessTrainer() {
   }, []);
 
   /* ---- Start / restart --------------------------------------------- */
-  const startGame = useCallback(() => {
-    gameRef.current = new Chess();
-    setBlunder(null);
-    setThinking(false);
-    setStarted(true);
-    setCoach(
-      `Playing the ${opening} as ${playerColor === "w" ? "White" : "Black"}. Bot rated ${elo}.${
-        openingGuide ? " Follow the book arrow to learn the main line." : " Best Moves and the Vision layers are one click away."
-      }`
-    );
-    syncState();
-  }, [opening, playerColor, elo, openingGuide, syncState]);
+  // Drop into a normal game from any TrainingPosition (standard, opening,
+  // FEN, or a puzzle handoff). One game engine, many entry points.
+  const startFromPosition = useCallback(
+    (pos: TrainingPosition) => {
+      gameRef.current = new Chess(pos.fen);
+      if (pos.meta?.opening) setOpening(pos.meta.opening as keyof typeof OPENING_LINES);
+      setPlayerColor(pos.playerColor);
+      setBlunder(null);
+      setThinking(false);
+      setStarted(true);
+      setFenError(null);
+      const colorWord = pos.playerColor === "w" ? "White" : "Black";
+      const guideNote =
+        (pos.source === "standard" || pos.source === "opening") && openingGuide
+          ? " Follow the book arrow to learn the main line."
+          : " Tactical Radar, Best Moves and the Vision layers are one click away.";
+      setCoach(`Playing ${pos.label} as ${colorWord}. Bot rated ${elo}.${guideNote}`);
+      syncState();
+    },
+    [elo, openingGuide, syncState]
+  );
+
+  // Build a TrainingPosition from the current setup and start. A bad FEN sets an
+  // inline error instead of starting.
+  const handleStart = useCallback(() => {
+    if (startMode === "fen") {
+      const res = validateFen(fenInput);
+      if (!res.ok || !res.fen) {
+        setFenError(res.error ?? "Invalid FEN.");
+        return;
+      }
+      startFromPosition(fenPosition(res.fen, playerColor));
+      return;
+    }
+    if (startMode === "opening") {
+      const pos = openingPosition(opening, openingDepth, playerColor);
+      startFromPosition(pos ?? standardPosition(playerColor));
+      return;
+    }
+    startFromPosition(standardPosition(playerColor));
+  }, [startMode, fenInput, opening, openingDepth, playerColor, startFromPosition]);
+
+  // A position handed in from elsewhere (e.g. "Play from here" on a puzzle):
+  // start it immediately, then tell the parent it's been consumed.
+  useEffect(() => {
+    if (!initialPosition) return;
+    startFromPosition(initialPosition);
+    onConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPosition]);
 
   /* ---- Bot move ---------------------------------------------------- */
   const runBot = useCallback(async () => {
@@ -1035,6 +1097,84 @@ export default function ChessTrainer() {
                 ))}
               </select>
 
+              {/* Start position — standard, mid-opening, or a pasted FEN */}
+              <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-400">
+                <Flag className="h-3.5 w-3.5" /> Start position
+              </label>
+              <div className="mb-3 grid grid-cols-3 gap-2">
+                {(
+                  [
+                    ["standard", "Standard"],
+                    ["opening", "Mid-opening"],
+                    ["fen", "From FEN"],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    onClick={() => {
+                      setStartMode(mode);
+                      setFenError(null);
+                    }}
+                    aria-pressed={startMode === mode}
+                    className={`rounded-lg border px-2 py-2 text-xs font-medium transition-all ${
+                      startMode === mode
+                        ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300 shadow-inner"
+                        : "border-slate-800 bg-slate-800/40 text-slate-400 hover:border-slate-700"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {startMode === "opening" && (
+                <div className="mb-4">
+                  <label className="mb-1.5 flex items-center justify-between text-xs font-medium text-slate-400">
+                    <span>Start depth</span>
+                    <span className="font-mono text-emerald-300">
+                      {openingDepth} moves in
+                    </span>
+                  </label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {OPENING_DEPTHS.map((d) => (
+                      <button
+                        key={d}
+                        onClick={() => setOpeningDepth(d)}
+                        aria-pressed={openingDepth === d}
+                        className={`rounded-lg border px-2 py-1.5 text-xs font-medium transition-all ${
+                          openingDepth === d
+                            ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300 shadow-inner"
+                            : "border-slate-800 bg-slate-800/40 text-slate-400 hover:border-slate-700"
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+                    Seeds the board {openingDepth} full moves into the {opening} main line, then you play
+                    on against the bot.
+                  </p>
+                </div>
+              )}
+
+              {startMode === "fen" && (
+                <div className="mb-4">
+                  <textarea
+                    value={fenInput}
+                    onChange={(e) => {
+                      setFenInput(e.target.value);
+                      setFenError(null);
+                    }}
+                    rows={2}
+                    spellCheck={false}
+                    placeholder="Paste a FEN, e.g. r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3"
+                    className="w-full resize-none rounded-lg border border-slate-800 bg-slate-800/60 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-200 outline-none transition-colors placeholder:text-slate-600 focus:border-emerald-500/50"
+                  />
+                  {fenError && <p className="mt-1.5 text-[11px] text-rose-400">{fenError}</p>}
+                </div>
+              )}
+
               {/* Opening guide toggle */}
               <label className="mb-4 flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-800/40 px-3 py-2.5">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
@@ -1058,7 +1198,7 @@ export default function ChessTrainer() {
               </label>
 
               <button
-                onClick={startGame}
+                onClick={handleStart}
                 className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-emerald-400 to-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 active:scale-[0.98]"
               >
                 <Play className="h-4 w-4" /> {started ? "Restart" : "Start Training"}
