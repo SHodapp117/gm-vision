@@ -19,6 +19,7 @@ A modern, browser-based React chess training app that visualizes **board control
 - **Tactical Radar** — on your turn the coach scans the position and *names* the tactics available to you — a **forced mate in 1/2/3** (confirmed by the engine, never guessed), a **fork** (a move that hits two valuable targets and stays safe), or a **pin** (an enemy piece pinned to its king or a bigger piece) — **without revealing the move**. It's a discovery aid ("You have a forced mate in 2 — can you find it?"), not a solver: the pattern is flagged, you find the move. It also warns when the *bot* has a forced mate against you, and can be toggled off.
 - **Blunder correction, with player override** — the engine flags real mistakes/blunders (by centipawn loss); the game pauses and a modal explains *why*. You decide: **Undo & Retry**, or **Play it anyway** — the coach only advises, the player always has the final word.
 - **Tactics trainer** — a Puzzles mode with ~5,000 curated Lichess puzzles, a local tactics rating, streaks, theme/difficulty filters, and hints (see below). **Play from here** turns any puzzle into a starting position: hand it straight to the Play tab and continue it as a normal, fully-coached game against the bot (you take the side to move) — instead of only solving the scripted line.
+- **Chess.com import** — a **Games** tab that pulls your real games from the [Chess.com public API](https://www.chess.com/news/view/published-data-api): enter your username, pick a month range, and import. Games are deduped by their Chess.com id and stored locally (IndexedDB), so re-importing only adds what's new. Browse and filter them (result / time control / opponent / rating), replay any game on the board, **Analyze** it with the bundled Stockfish to flag your inaccuracies/mistakes/blunders (with a **Coach Insights** summary of recurring patterns), and **Play from here** to continue any position against the bot. Fully client-side and read-only — no password, no account linking. Details in [`src/chesscom/README.md`](src/chesscom/README.md).
 - **Coach's feedback** panel, PGN-style move history, and a glassmorphism control panel with a dark-mode-first, Vercel/Linear-inspired aesthetic.
 
 ## Tech stack
@@ -75,11 +76,13 @@ bands and themes. It tracks an Elo-style tactics rating and streak in
 
 ```
 src/
-  App.tsx            # top-level shell + Play/Puzzles switcher + puzzle→Play handoff
+  App.tsx            # top-level shell + Play/Puzzles/Games switcher + play-from-position handoff
   ChessTrainer.tsx   # the Play trainer (board, vision, guide, radar, move guidance)
   PuzzleTrainer.tsx  # the tactics/puzzle mode (+ "Play from here")
+  GameLibrary.tsx    # the Games tab — Chess.com import, review, analyze, play-from-here
   engine/            # Stockfish wrapper, move classification, tactics detector, move explorer
   game/              # shared chess layer: board analysis, opening book, TrainingPosition
+  chesscom/          # Chess.com import: API client, PGN normalise, IndexedDB store, analysis
   components/        # EvalBar, Credits
   puzzles/           # puzzle selection + rating store
   data/puzzles.json  # curated CC0 puzzle dataset
