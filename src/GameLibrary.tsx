@@ -24,8 +24,8 @@ import {
 import { createClient, ChessComError, isValidUsername, type ChessComClient } from "./chesscom/client";
 import { importGames } from "./chesscom/import";
 import { createIndexedDbStore } from "./chesscom/store";
-import { analyzeGame } from "./chesscom/analyzeGame";
-import { buildInsights } from "./chesscom/insights";
+import { analyzeGame, analyzeGames } from "./chesscom/analyzeGame";
+import { buildCoachReport } from "./chesscom/metaReport";
 import type {
   GameFinding,
   GameStore,
@@ -195,6 +195,11 @@ export default function GameLibrary({
   const [analyzeProgress, setAnalyzeProgress] = useState<AnalyzeProgress | null>(null);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const analyzeAbortRef = useRef<AbortController | null>(null);
+
+  /* ---- Batch ("Analyze N games") state for the Coach Report ------------ */
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
+  const batchAbortRef = useRef<AbortController | null>(null);
 
   const didInitRef = useRef(false);
 
@@ -438,8 +443,46 @@ export default function GameLibrary({
     onPlayFromPosition(fenPosition(replay.fen, replay.turn));
   }, [replay, onPlayFromPosition]);
 
-  /* ---- Coach insights over the connected account's analyzed games -------- */
-  const insights = useMemo(() => buildInsights(games), [games]);
+  /* ---- Coach Report — meta-analysis over the whole game history ---------- */
+  const report = useMemo(() => buildCoachReport(games), [games]);
+  const unanalyzedCount = useMemo(() => games.filter((g) => !g.analyzed).length, [games]);
+
+  // Batch-analyze the most-recent unanalyzed games to deepen the report. Each
+  // game is persisted + folded into state as it finishes, so the report updates
+  // live; cancellable via the abort controller.
+  const handleAnalyzeBatch = useCallback(async () => {
+    if (batchRunning) return;
+    const BATCH = 20;
+    const targets = games
+      .filter((g) => !g.analyzed)
+      .sort((a, b) => b.endTime - a.endTime)
+      .slice(0, BATCH);
+    if (!targets.length) return;
+
+    setBatchRunning(true);
+    setBatchProgress({ done: 0, total: targets.length });
+    const controller = new AbortController();
+    batchAbortRef.current = controller;
+    try {
+      await analyzeGames(targets, (fen, opts) => getEngine().analyze(fen, opts), {
+        movetime: 300,
+        signal: controller.signal,
+        onGame: async (updated) => {
+          await store.putGame(updated);
+          setGames((prev) => prev.map((g) => (g.uuid === updated.uuid ? updated : g)));
+        },
+        onProgress: (p) => setBatchProgress({ done: p.done, total: p.total }),
+      });
+    } catch {
+      // Individual game failures are already swallowed inside analyzeGame.
+    } finally {
+      setBatchRunning(false);
+      setBatchProgress(null);
+      batchAbortRef.current = null;
+    }
+  }, [batchRunning, games]);
+
+  const cancelBatch = useCallback(() => batchAbortRef.current?.abort(), []);
 
   const orientation = selectedGame?.playerColor === "b" ? "black" : "white";
 
@@ -561,26 +604,93 @@ export default function GameLibrary({
           )}
         </section>
 
-        {/* ---- Coach insights ------------------------------------------ */}
-        {insights.length > 0 && (
+        {/* ---- Coach Report — whole-history meta-analysis --------------- */}
+        {report.totalGames > 0 && (
           <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/50 p-5 backdrop-blur-xl">
-            <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-200">
-              <Sparkles className="h-4 w-4 text-emerald-400" /> Coach Insights
-            </h2>
-            <div className="flex flex-col gap-2">
-              {insights.map((insight) => {
-                const style = SEVERITY_STYLE[insight.severity];
-                return (
-                  <div
-                    key={insight.id}
-                    className={`rounded-xl border ${style.border} ${style.bg} p-3.5`}
-                  >
-                    <p className={`text-sm font-semibold ${style.text}`}>{insight.title}</p>
-                    <p className="mt-0.5 text-xs leading-relaxed text-slate-400">{insight.detail}</p>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+                <Sparkles className="h-4 w-4 text-emerald-400" /> Coach Report
+              </h2>
+              {unanalyzedCount > 0 &&
+                (batchRunning ? (
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs text-slate-400">
+                      Analyzing {batchProgress?.done ?? 0}/{batchProgress?.total ?? 0}…
+                    </span>
+                    <button
+                      onClick={cancelBatch}
+                      className="flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1.5 text-xs font-semibold text-rose-200 transition-all hover:border-rose-400/60"
+                    >
+                      <X className="h-3.5 w-3.5" /> Cancel
+                    </button>
                   </div>
-                );
-              })}
+                ) : (
+                  <button
+                    onClick={handleAnalyzeBatch}
+                    title="Analyze your most recent unanalyzed games to unlock deeper tips"
+                    className="flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-semibold text-emerald-200 transition-all hover:border-emerald-400/60 hover:bg-emerald-500/15"
+                  >
+                    <Gauge className="h-3.5 w-3.5" /> Analyze {Math.min(20, unanalyzedCount)} games
+                  </button>
+                ))}
             </div>
+
+            <p className="mb-3 text-sm leading-relaxed text-slate-300">{report.headline}</p>
+
+            {batchRunning && batchProgress && (
+              <div className="mb-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                <div
+                  className="h-full rounded-full bg-emerald-500 transition-all"
+                  style={{ width: `${batchProgress.total ? Math.round((batchProgress.done / batchProgress.total) * 100) : 0}%` }}
+                />
+              </div>
+            )}
+
+            {/* Summary stats */}
+            <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+              {report.stats.map((s) => (
+                <div key={s.label} className="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2" title={s.hint}>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500">{s.label}</div>
+                  <div className="font-mono text-sm text-slate-200">{s.value}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Prioritized recommendations */}
+            {report.recommendations.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                {report.recommendations.map((rec) => {
+                  const style = SEVERITY_STYLE[rec.severity];
+                  const examples = (rec.exampleUuids ?? [])
+                    .map((id) => games.find((g) => g.uuid === id))
+                    .filter((g): g is ImportedGame => !!g);
+                  return (
+                    <div key={rec.id} className={`rounded-xl border ${style.border} ${style.bg} p-3.5`}>
+                      <p className={`text-sm font-semibold ${style.text}`}>{rec.title}</p>
+                      <p className="mt-0.5 text-xs leading-relaxed text-slate-400">{rec.detail}</p>
+                      {rec.tip && <p className="mt-1.5 text-xs leading-relaxed text-slate-300">→ {rec.tip}</p>}
+                      {examples.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {examples.map((g) => (
+                            <button
+                              key={g.uuid}
+                              onClick={() => selectGame(g)}
+                              className="rounded-full border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[11px] text-slate-300 transition-colors hover:border-emerald-500/50 hover:text-emerald-300"
+                            >
+                              vs {g.opponent} ({g.playerResult})
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-xs leading-relaxed text-slate-500">
+                Not enough games yet for firm patterns — import more, or analyze some games to unlock deeper tips.
+              </p>
+            )}
           </section>
         )}
 
