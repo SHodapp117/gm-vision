@@ -38,6 +38,20 @@ function stripAnnotations(pgn: string): string {
   return pgn.replace(/\{[^}]*\}/g, "").replace(/\$\d+/g, "");
 }
 
+/**
+ * Seconds remaining after each half-move, from the PGN's `[%clk H:MM:SS]` tags
+ * (Chess.com includes one per move, in move order). Empty if the PGN has none.
+ */
+function parseClocks(pgn: string): number[] {
+  const clocks: number[] = [];
+  const re = /\[%clk\s+(\d+):(\d+):(\d+(?:\.\d+)?)\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(pgn)) !== null) {
+    clocks.push(Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]));
+  }
+  return clocks;
+}
+
 /** Load a PGN with chess.js, retrying once with annotations stripped. */
 function loadPgnLeniently(pgn: string): Chess {
   const g = new Chess();
@@ -119,6 +133,7 @@ export function normalizeGame(apiGame: ChessComApiGame, account: string): Import
     playerResult,
     opponent: opponentSide.username,
     opponentRating: opponentSide.rating,
+    clocks: parseClocks(apiGame.pgn),
     analyzed: false,
   };
 }

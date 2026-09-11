@@ -82,6 +82,10 @@ export interface GameFinding {
   allowsMateIn?: number;
   /** A strong move that gives up material and is still the engine's top choice. */
   brilliant?: boolean;
+  /** The tactic you missed at this position: "mate" | "fork" | "pin" (if any). */
+  motif?: string;
+  /** Seconds left on the player's clock at this move (from the PGN, if present). */
+  secondsLeft?: number;
 }
 
 /** Every analysed player move's quality — drives per-move badges and counts. */
@@ -130,6 +134,8 @@ export interface ImportedGame {
   playerResult: PlayerOutcome; // from the imported account's perspective
   opponent: string;
   opponentRating: number;
+  /** Seconds remaining after each half-move, parsed from the PGN's %clk tags (if any). */
+  clocks?: number[];
   analyzed: boolean;
   analysis?: GameAnalysis;
 }

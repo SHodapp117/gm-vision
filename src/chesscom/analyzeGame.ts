@@ -17,6 +17,7 @@ import { Chess } from "chess.js";
 import { evaluateMove } from "../engine/classify";
 import type { AnalyzeFn } from "../engine/classify";
 import { PIECE_VALUE, findHangingPieces } from "../game/boardAnalysis";
+import { detectPatternTactics } from "../engine/tactics";
 import type { GameAnalysis, GameFinding, ImportedGame, MoveQualityEntry } from "./types";
 
 export type { AnalyzeFn };
@@ -39,6 +40,19 @@ const BRILLIANT_MIN_CP = -50;
 /** Total value of `color`'s pieces currently hanging in `fen`. */
 function hangingValue(fen: string, color: "w" | "b"): number {
   return findHangingPieces(new Chess(fen), color).reduce((sum, h) => sum + PIECE_VALUE[h.type], 0);
+}
+
+/** The tactic on the board here — i.e. what the player likely missed. */
+function detectMotif(fenBefore: string, color: "w" | "b", bestLineMate: number | undefined): string | undefined {
+  if (bestLineMate !== undefined && bestLineMate > 0) return "mate";
+  try {
+    const pats = detectPatternTactics(fenBefore, color);
+    if (pats.some((p) => p.type === "fork")) return "fork";
+    if (pats.some((p) => p.type === "pin")) return "pin";
+  } catch {
+    /* geometry hiccup — no motif */
+  }
+  return undefined;
 }
 // Cap each move's contribution to the AVERAGE centipawn loss. classify.ts encodes
 // forced mates as a ~100000cp swing, so without a ceiling a single mate-in-N move
@@ -171,6 +185,12 @@ export async function analyzeGame(
 
       moveQualities.push({ ply, quality: evaluation.quality, brilliant });
 
+      const flagged = FLAGGED_QUALITIES.has(evaluation.quality) || evaluation.allowsMateIn !== undefined;
+      // Only the moves we keep (errors + brilliancies) get the extra, pricier
+      // labelling: the tactic that was on the board, and the clock at the time.
+      const motif = flagged || brilliant ? detectMotif(fenBefore, game.playerColor, evaluation.bestLineMate) : undefined;
+      const secondsLeft = game.clocks && ply < game.clocks.length ? game.clocks[ply] : undefined;
+
       const finding: GameFinding = {
         ply,
         moveNo: Math.floor(ply / 2) + 1,
@@ -184,11 +204,13 @@ export async function analyzeGame(
         phase: classifyPhase(fenBefore, Math.floor(ply / 2) + 1),
         allowsMateIn: evaluation.allowsMateIn,
         brilliant,
+        motif,
+        secondsLeft,
       };
 
       if (brilliant) {
         brilliancies.push(finding);
-      } else if (FLAGGED_QUALITIES.has(evaluation.quality) || evaluation.allowsMateIn !== undefined) {
+      } else if (flagged) {
         findings.push(finding);
       }
     } catch {

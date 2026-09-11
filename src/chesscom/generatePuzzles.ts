@@ -67,7 +67,8 @@ function puzzleFromFinding(game: ImportedGame, ply: number, bestUci: string | un
     if (!solved) return null;
 
     const themes: string[] = [finding.quality, finding.phase];
-    if (finding.allowsMateIn) themes.push("mate");
+    if (finding.motif && !themes.includes(finding.motif)) themes.push(finding.motif);
+    if (finding.allowsMateIn && !themes.includes("mate")) themes.push("mate");
 
     return {
       id: `${game.uuid}-${ply}`,

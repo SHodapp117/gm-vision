@@ -228,6 +228,91 @@ function ratingTrendInsight(games: ImportedGame[]): Insight | null {
   };
 }
 
+/* ---- Engine-tier detectors that read the new finding fields --------- */
+
+/** Base seconds from a time control ("600+5" → 600); null for daily ("1/259200"). */
+function baseSeconds(timeControl: string): number | null {
+  if (timeControl.includes("/")) return null;
+  const base = parseInt(timeControl.split("+")[0], 10);
+  return Number.isFinite(base) && base > 0 ? base : null;
+}
+
+/** Errors that land when the clock is low (needs PGN clock data; skips daily). */
+function timePressureInsight(games: ImportedGame[]): Insight | null {
+  const MIN = 6;
+  let pressured = 0;
+  let total = 0;
+  const examples: ImportedGame[] = [];
+  for (const g of games) {
+    const base = baseSeconds(g.timeControl);
+    if (base === null) continue;
+    const threshold = Math.min(30, base * 0.2);
+    let hit = false;
+    for (const f of g.analysis!.findings) {
+      if (f.quality !== "mistake" && f.quality !== "blunder") continue;
+      if (f.secondsLeft === undefined) continue;
+      total++;
+      if (f.secondsLeft < threshold) {
+        pressured++;
+        hit = true;
+      }
+    }
+    if (hit) examples.push(g);
+  }
+  if (total < MIN) return null;
+  const share = pressured / total;
+  if (share < 0.4) return null;
+  return {
+    id: "time-pressure-errors",
+    severity: share >= 0.6 ? "strong" : "warn",
+    title: "Many of your errors come in time trouble",
+    detail: `${pressured} of ${total} analysed mistakes/blunders (${pct(share)}%) happened with little time on your clock.`,
+    tip: "Budget your clock — decide faster in the opening and quiet positions so you keep time for the sharp moments.",
+    tags: ["time-management", "clock"],
+    exampleUuids: uuidsOf(examples),
+    needsAnalysis: true,
+  };
+}
+
+const MOTIF_LABEL: Record<string, string> = { mate: "forced mates", fork: "forks", pin: "pins" };
+const MOTIF_TIP: Record<string, string> = {
+  mate: "Scan forcing checks and captures first — the mates you're missing are usually a check away.",
+  fork: "Drill forks in the Puzzles tab (or My mistakes) — look for squares that hit two pieces at once.",
+  pin: "Practice pins — before moving, check whether an enemy piece is stuck in front of a bigger one.",
+};
+
+/** The tactical motif the player misses most often (from finding.motif). */
+function missedMotifInsight(games: ImportedGame[]): Insight | null {
+  const counts = new Map<string, number>();
+  const byMotif = new Map<string, ImportedGame[]>();
+  let total = 0;
+  for (const g of games) {
+    for (const f of g.analysis!.findings) {
+      if (!f.motif) continue;
+      counts.set(f.motif, (counts.get(f.motif) ?? 0) + 1);
+      const arr = byMotif.get(f.motif) ?? [];
+      if (!arr.includes(g)) arr.push(g);
+      byMotif.set(f.motif, arr);
+      total++;
+    }
+  }
+  if (total < 4) return null;
+  const [motif, n] = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  const share = n / total;
+  if (n < 3 || share < 0.4) return null;
+  const label = MOTIF_LABEL[motif] ?? motif;
+  return {
+    id: `missed-motif-${motif}`,
+    severity: share >= 0.6 ? "strong" : "warn",
+    title: `You most often miss ${label}`,
+    detail: `${n} of ${total} missed tactical chances (${pct(share)}%) were ${label}.`,
+    tip: MOTIF_TIP[motif] ?? "Drill this pattern in the Puzzles tab (My mistakes).",
+    tags: ["tactics", "missed", motif],
+    exampleUuids: uuidsOf(byMotif.get(motif) ?? []),
+    needsAnalysis: true,
+  };
+}
+
 /* ---- Summary stats + headline -------------------------------------- */
 
 function buildStats(games: ImportedGame[], analysed: ImportedGame[]): ReportStat[] {
@@ -278,7 +363,11 @@ export function buildCoachReport(games: ImportedGame[]): CoachReport {
     howYouLoseInsight(games),
     ratingTrendInsight(games),
   ];
-  const engine = engineInsights(games).map((i) => ({ ...i, needsAnalysis: true }));
+  const engine = [
+    ...engineInsights(games).map((i) => ({ ...i, needsAnalysis: true })),
+    timePressureInsight(analysed),
+    missedMotifInsight(analysed),
+  ].filter((i): i is Insight => i !== null);
 
   const recommendations = [...metadata.filter((i): i is Insight => i !== null), ...engine]
     .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity])
