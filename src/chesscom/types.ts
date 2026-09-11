@@ -173,4 +173,26 @@ export interface Insight {
   title: string;
   detail: string;
   tags: string[];
+  /** Actionable next step ("Drill middlegame tactics in the Puzzles tab"). */
+  tip?: string;
+  /** uuids of games that illustrate the pattern, for drill-in. */
+  exampleUuids?: string[];
+  /** True for engine-tier tips — only meaningful once games are analyzed. */
+  needsAnalysis?: boolean;
+}
+
+/** One headline number in the Coach Report summary row. */
+export interface ReportStat {
+  label: string;
+  value: string;
+  hint?: string;
+}
+
+/** The whole-history meta-analysis: a profile + prioritized, actionable advice. */
+export interface CoachReport {
+  totalGames: number;
+  analyzedGames: number;
+  headline: string;
+  stats: ReportStat[];
+  recommendations: Insight[];
 }

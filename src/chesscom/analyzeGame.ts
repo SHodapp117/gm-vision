@@ -216,3 +216,36 @@ export async function analyzeGame(
     analyzedAt: Date.now(),
   };
 }
+
+export interface AnalyzeBatchOptions {
+  movetime?: number;
+  /** Persist each game once its analysis completes (e.g. store.putGame). */
+  onGame?: (game: ImportedGame) => void | Promise<void>;
+  onProgress?: (p: { done: number; total: number; game: ImportedGame }) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Analyze a list of games one after another, persisting each via `onGame` as it
+ * finishes. Cancellable through `signal` — a game interrupted mid-analysis is
+ * NOT persisted (so we never store a half-finished analysis as complete). This
+ * powers the Coach Report's "Analyze N games" batch; it stays responsive because
+ * each move's engine call is awaited (the event loop is never blocked).
+ */
+export async function analyzeGames(
+  games: ImportedGame[],
+  analyze: AnalyzeFn,
+  opts?: AnalyzeBatchOptions
+): Promise<{ analyzed: number; cancelled: boolean }> {
+  let done = 0;
+  for (const game of games) {
+    if (opts?.signal?.aborted) return { analyzed: done, cancelled: true };
+    const analysis = await analyzeGame(game, analyze, { movetime: opts?.movetime, signal: opts?.signal });
+    if (opts?.signal?.aborted) return { analyzed: done, cancelled: true };
+    const updated: ImportedGame = { ...game, analyzed: true, analysis };
+    await opts?.onGame?.(updated);
+    done++;
+    opts?.onProgress?.({ done, total: games.length, game: updated });
+  }
+  return { analyzed: done, cancelled: false };
+}

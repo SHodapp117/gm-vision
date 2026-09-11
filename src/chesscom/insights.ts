@@ -15,8 +15,8 @@ type Phase = "opening" | "middlegame" | "endgame";
 const SEVERITY_RANK: Record<Insight["severity"], number> = { strong: 3, warn: 2, info: 1 };
 const MAX_INSIGHTS = 5;
 
-/** Games with a completed analysis — the only ones any insight may use. */
-function analysedGames(games: ImportedGame[]): ImportedGame[] {
+/** Games with a completed analysis — the only ones any engine insight may use. */
+export function analysedGames(games: ImportedGame[]): ImportedGame[] {
   return games.filter((g) => g.analyzed && g.analysis);
 }
 
@@ -24,11 +24,16 @@ function otherColor(c: "w" | "b"): "w" | "b" {
   return c === "w" ? "b" : "w";
 }
 
-function slugify(s: string): string {
+export function slugify(s: string): string {
   return s
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
+}
+
+/** First `n` game uuids, for the "example games" drill-in on a recommendation. */
+function uuidsOf(games: ImportedGame[], n = 3): string[] {
+  return games.slice(0, n).map((g) => g.uuid);
 }
 
 /* ---- Overall error rate --------------------------------------------- */
@@ -47,12 +52,18 @@ function overallErrorRateInsight(games: ImportedGame[]): Insight | null {
   if (perGame < 1) return null; // not enough signal to say anything useful
 
   const severity: Insight["severity"] = perGame >= 3 ? "strong" : perGame >= 1.5 ? "warn" : "info";
+  const examples = [...games].sort(
+    (a, b) => b.analysis!.blunders + b.analysis!.mistakes - (a.analysis!.blunders + a.analysis!.mistakes)
+  );
   return {
     id: "overall-error-rate",
     severity,
     title: perGame >= 1.5 ? "Mistakes and blunders are frequent" : "A steady trickle of mistakes and blunders",
     detail: `Across ${games.length} analysed games you average ${perGame.toFixed(1)} mistakes/blunders per game (${blunders} blunders, ${mistakes} mistakes total).`,
+    tip: "Before each move, take a beat to check what your opponent's last move threatens — most of these are one-move oversights.",
     tags: ["accuracy", "overview"],
+    exampleUuids: uuidsOf(examples),
+    needsAnalysis: true,
   };
 }
 
@@ -76,19 +87,28 @@ function blundersByPhaseInsight(games: ImportedGame[]): Insight | null {
   const share = topCount / total;
   if (share < 0.5) return null; // no clear plurality
 
+  const examples = games.filter((g) => g.analysis!.findings.some((f) => f.quality === "blunder" && f.phase === topPhase));
+  const PHASE_TIP: Record<Phase, string> = {
+    opening: "Shore up your openings — rehearse your main lines in the Play tab's Mid-opening trainer.",
+    middlegame: "Drill middlegame tactics in the Puzzles tab (fork, pin, skewer themes).",
+    endgame: "Study basic endgames and slow down once material is reduced — endings reward calculation over speed.",
+  };
   return {
     id: `blunders-phase-${topPhase}`,
     severity: share >= 0.66 ? "strong" : "warn",
     title: `Most of your blunders happen in the ${topPhase}`,
     detail: `${topCount} of your ${total} analysed blunders (${Math.round(share * 100)}%) occurred in the ${topPhase}.`,
+    tip: PHASE_TIP[topPhase],
     tags: ["blunders", "phase", topPhase],
+    exampleUuids: uuidsOf(examples),
+    needsAnalysis: true,
   };
 }
 
 /* ---- Loses material shortly after castling --------------------------- */
 
 /** Half-move index -> mover color, for a game's own move list (colors always alternate). */
-function moverColors(game: ImportedGame): ("w" | "b")[] {
+export function moverColors(game: ImportedGame): ("w" | "b")[] {
   const startTurn = new Chess(game.startFen).turn();
   const movers: ("w" | "b")[] = [];
   let mover = startTurn;
@@ -105,7 +125,7 @@ function castleThenLossInsight(games: ImportedGame[]): Insight | null {
   const BAD_QUALITIES = new Set(["mistake", "blunder"]);
   if (games.length < MIN_GAMES) return null;
 
-  let matchingGames = 0;
+  const matching: ImportedGame[] = [];
   for (const g of games) {
     const movers = moverColors(g);
     const findingsByPly = new Map<number, GameFinding>(g.analysis!.findings.map((f) => [f.ply, f]));
@@ -124,19 +144,22 @@ function castleThenLossInsight(games: ImportedGame[]): Insight | null {
         }
       }
     }
-    if (hit) matchingGames++;
+    if (hit) matching.push(g);
   }
 
-  if (matchingGames < 2) return null;
-  const rate = matchingGames / games.length;
+  if (matching.length < 2) return null;
+  const rate = matching.length / games.length;
   if (rate < 0.25) return null;
 
   return {
     id: "castle-then-blunder",
     severity: rate >= 0.4 ? "strong" : "warn",
     title: "You often lose material shortly after castling",
-    detail: `In ${matchingGames} of your ${games.length} analysed games, a mistake or blunder landed within 6 half-moves of castling.`,
+    detail: `In ${matching.length} of your ${games.length} analysed games, a mistake or blunder landed within 6 half-moves of castling.`,
+    tip: "Right after castling, pause to spot loose pieces and back-rank/f-file weaknesses before you push forward.",
     tags: ["pattern", "king-safety", "castling"],
+    exampleUuids: uuidsOf(matching),
+    needsAnalysis: true,
   };
 }
 
@@ -173,7 +196,7 @@ function weakestTimeClassInsight(games: ImportedGame[]): Insight | null {
 
 /* ---- Worst opening by result ------------------------------------------ */
 
-function openingKey(g: ImportedGame): string | undefined {
+export function openingKey(g: ImportedGame): string | undefined {
   if (g.eco) return g.eco;
   if (g.ecoUrl) {
     const tail = g.ecoUrl.split("/").filter(Boolean).pop();
@@ -214,6 +237,22 @@ function worstOpeningInsight(games: ImportedGame[]): Insight | null {
 }
 
 /* ---- Entry point ------------------------------------------------------- */
+
+/**
+ * The engine-tier insights — patterns that genuinely require move-by-move
+ * analysis. Uncapped/unsorted, each tagged `needsAnalysis`, for the Coach
+ * Report to merge with its metadata-tier findings. (Time-class and opening
+ * win-rate are metadata patterns and are computed over ALL games in
+ * metaReport.ts, so they're intentionally not here.)
+ */
+export function engineInsights(games: ImportedGame[]): Insight[] {
+  const analysed = analysedGames(games);
+  return [
+    overallErrorRateInsight(analysed),
+    blundersByPhaseInsight(analysed),
+    castleThenLossInsight(analysed),
+  ].filter((i): i is Insight => i !== null);
+}
 
 /** Up to ~5 Insights, most severe first. Deterministic — same input, same output. */
 export function buildInsights(games: ImportedGame[]): Insight[] {
