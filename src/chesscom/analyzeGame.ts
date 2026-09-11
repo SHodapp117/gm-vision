@@ -16,7 +16,8 @@
 import { Chess } from "chess.js";
 import { evaluateMove } from "../engine/classify";
 import type { AnalyzeFn } from "../engine/classify";
-import type { GameAnalysis, GameFinding, ImportedGame } from "./types";
+import { PIECE_VALUE, findHangingPieces } from "../game/boardAnalysis";
+import type { GameAnalysis, GameFinding, ImportedGame, MoveQualityEntry } from "./types";
 
 export type { AnalyzeFn };
 
@@ -28,6 +29,17 @@ export interface AnalyzeGameOptions {
 
 const DEFAULT_MOVETIME = 300;
 const FLAGGED_QUALITIES = new Set(["inaccuracy", "mistake", "blunder"]);
+// A "brilliant" move is the engine's top choice that also gives up at least a
+// minor piece's worth of material (a real sacrifice) while keeping the player
+// out of a losing position. BRILLIANT_SAC is the minimum material handed over;
+// BRILLIANT_MIN_CP is how bad the resulting eval may be (from the player's POV).
+const BRILLIANT_SAC = 3;
+const BRILLIANT_MIN_CP = -50;
+
+/** Total value of `color`'s pieces currently hanging in `fen`. */
+function hangingValue(fen: string, color: "w" | "b"): number {
+  return findHangingPieces(new Chess(fen), color).reduce((sum, h) => sum + PIECE_VALUE[h.type], 0);
+}
 // Cap each move's contribution to the AVERAGE centipawn loss. classify.ts encodes
 // forced mates as a ~100000cp swing, so without a ceiling a single mate-in-N move
 // dwarfs a whole game's average. Individual findings still record the true cpLoss;
@@ -110,6 +122,8 @@ export async function analyzeGame(
 
   const chess = new Chess(game.startFen);
   const findings: GameFinding[] = [];
+  const brilliancies: GameFinding[] = [];
+  const moveQualities: MoveQualityEntry[] = [];
   let totalCpLoss = 0;
   let analysedCount = 0;
   let doneCount = 0;
@@ -147,20 +161,35 @@ export async function analyzeGame(
       totalCpLoss += Math.min(evaluation.cpLoss, AVG_CP_LOSS_CAP);
       analysedCount++;
 
-      if (FLAGGED_QUALITIES.has(evaluation.quality) || evaluation.allowsMateIn !== undefined) {
-        findings.push({
-          ply,
-          moveNo: Math.floor(ply / 2) + 1,
-          fenBefore,
-          playedSan: verboseMove.san,
-          playedUci,
-          bestSan: bestMoveToSan(fenBefore, evaluation.bestMoveUci),
-          bestUci: evaluation.bestMoveUci,
-          quality: evaluation.quality,
-          cpLoss: evaluation.cpLoss,
-          phase: classifyPhase(fenBefore, Math.floor(ply / 2) + 1),
-          allowsMateIn: evaluation.allowsMateIn,
-        });
+      // A brilliant move: the engine's top choice AND a genuine material
+      // sacrifice (the player is left materially down here) that doesn't lose.
+      const isBest = evaluation.quality === "best" && evaluation.allowsMateIn === undefined;
+      const sacrificed = isBest ? hangingValue(fenAfter, game.playerColor) - hangingValue(fenBefore, game.playerColor) : 0;
+      const notLosing =
+        evaluation.bestLineMate !== undefined ? evaluation.bestLineMate > 0 : (evaluation.bestLineCp ?? 0) >= BRILLIANT_MIN_CP;
+      const brilliant = isBest && sacrificed >= BRILLIANT_SAC && notLosing;
+
+      moveQualities.push({ ply, quality: evaluation.quality, brilliant });
+
+      const finding: GameFinding = {
+        ply,
+        moveNo: Math.floor(ply / 2) + 1,
+        fenBefore,
+        playedSan: verboseMove.san,
+        playedUci,
+        bestSan: bestMoveToSan(fenBefore, evaluation.bestMoveUci),
+        bestUci: evaluation.bestMoveUci,
+        quality: evaluation.quality,
+        cpLoss: evaluation.cpLoss,
+        phase: classifyPhase(fenBefore, Math.floor(ply / 2) + 1),
+        allowsMateIn: evaluation.allowsMateIn,
+        brilliant,
+      };
+
+      if (brilliant) {
+        brilliancies.push(finding);
+      } else if (FLAGGED_QUALITIES.has(evaluation.quality) || evaluation.allowsMateIn !== undefined) {
+        findings.push(finding);
       }
     } catch {
       // A single move's engine call failing shouldn't sink the whole game.
@@ -170,16 +199,19 @@ export async function analyzeGame(
     opts?.onProgress?.({ done: doneCount, total: totalPlayerMoves });
   }
 
-  const inaccuracies = findings.filter((f) => f.quality === "inaccuracy").length;
-  const mistakes = findings.filter((f) => f.quality === "mistake").length;
-  const blunders = findings.filter((f) => f.quality === "blunder").length;
+  const count = (q: string) => moveQualities.filter((m) => !m.brilliant && m.quality === q).length;
   const avgCpLoss = analysedCount > 0 ? Math.round(totalCpLoss / analysedCount) : 0;
 
   return {
     findings,
-    inaccuracies,
-    mistakes,
-    blunders,
+    brilliancies,
+    moveQualities,
+    inaccuracies: count("inaccuracy"),
+    mistakes: count("mistake"),
+    blunders: count("blunder"),
+    good: count("good"),
+    best: count("best"),
+    brilliant: brilliancies.length,
     avgCpLoss,
     analyzedAt: Date.now(),
   };

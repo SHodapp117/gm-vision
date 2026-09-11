@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Chess } from "chess.js";
+import { Chess, type Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import {
   Library,
@@ -26,7 +26,15 @@ import { importGames } from "./chesscom/import";
 import { createIndexedDbStore } from "./chesscom/store";
 import { analyzeGame } from "./chesscom/analyzeGame";
 import { buildInsights } from "./chesscom/insights";
-import type { GameAnalysis, GameStore, ImportedGame, ImportRecord, ImportSummary, Insight } from "./chesscom/types";
+import type {
+  GameFinding,
+  GameStore,
+  ImportedGame,
+  ImportRecord,
+  ImportSummary,
+  Insight,
+  MoveQualityEntry,
+} from "./chesscom/types";
 import type { MoveQuality } from "./engine/classify";
 import { getEngine } from "./engine/stockfish";
 import { fenPosition, type TrainingPosition } from "./game/trainingPosition";
@@ -119,6 +127,29 @@ const SEVERITY_STYLE: Record<Insight["severity"], { border: string; bg: string; 
   warn: { border: "border-amber-500/40", bg: "bg-amber-500/10", text: "text-amber-300" },
   info: { border: "border-slate-700", bg: "bg-slate-800/40", text: "text-slate-300" },
 };
+
+// Analysis-breakdown arrows: the move you played vs. the engine's best move.
+const PLAYED_ARROW = "rgba(255, 7, 58, 0.9)"; // neon red — what you played
+const BEST_ARROW = "rgba(85, 204, 33, 0.95)"; // rave green — the best move
+const BRILLIANT_ARROW = "rgba(217, 70, 239, 0.95)"; // fuchsia — a brilliant move
+
+const BRILLIANT_BADGE = "bg-fuchsia-500/25 text-fuchsia-200";
+
+/** Tailwind classes for a move-quality chip, brilliant taking precedence. */
+function qualityBadgeClass(quality: MoveQualityEntry["quality"], brilliant?: boolean): string {
+  return brilliant ? BRILLIANT_BADGE : QUALITY_BADGE[quality];
+}
+
+/** "12." for a White move, "12…" for a Black move. */
+function moveLabel(moveNo: number, ply: number): string {
+  return ply % 2 === 0 ? `${moveNo}.` : `${moveNo}…`;
+}
+
+/** Human loss label: forced-mate swings read as mate, not a nonsense pawn count. */
+function lossLabel(cpLoss: number, allowsMateIn?: number): string {
+  if (allowsMateIn) return `allows mate in ${allowsMateIn}`;
+  return `−${(cpLoss / 100).toFixed(1)}`;
+}
 
 type ResultFilter = "all" | "win" | "loss" | "draw";
 type TimeClassFilter = "all" | "bullet" | "blitz" | "rapid" | "daily";
@@ -304,10 +335,54 @@ export default function GameLibrary({
   const shownFen = replay?.fen ?? new Chess().fen();
   const maxPly = selectedGame?.moves.length ?? 0;
 
-  const findingsByPly = useMemo(() => {
-    const map = new Map<number, GameAnalysis["findings"][number]>();
-    selectedGame?.analysis?.findings.forEach((f) => map.set(f.ply, f));
+  // Every analysed player move's quality, keyed by ply — drives move-list badges.
+  const qualityByPly = useMemo(() => {
+    const map = new Map<number, MoveQualityEntry>();
+    // `?.` on moveQualities: analyses stored before best/brilliant existed lack it.
+    selectedGame?.analysis?.moveQualities?.forEach((e) => map.set(e.ply, e));
     return map;
+  }, [selectedGame]);
+
+  // Notable moves (errors + brilliancies), keyed by ply, for the board arrows,
+  // caption, and Key-moments list.
+  const notableByPly = useMemo(() => {
+    const map = new Map<number, GameFinding>();
+    selectedGame?.analysis?.findings.forEach((f) => map.set(f.ply, f));
+    selectedGame?.analysis?.brilliancies?.forEach((f) => map.set(f.ply, f));
+    return map;
+  }, [selectedGame]);
+
+  // The notable move at the position currently on the board (ply === finding.ply
+  // is the position BEFORE that move — where the choice was made), if any.
+  const activeFinding = useMemo(() => notableByPly.get(ply) ?? null, [notableByPly, ply]);
+
+  // Arrows: a brilliant move (played === best) gets one fuchsia arrow; an error
+  // gets the played move (red) and the engine's best move (green).
+  const arrows = useMemo<[Square, Square, string][]>(() => {
+    if (!activeFinding) return [];
+    const list: [Square, Square, string][] = [];
+    const played = activeFinding.playedUci;
+    const best = activeFinding.bestUci;
+    if (activeFinding.brilliant) {
+      if (played && played.length >= 4) {
+        list.push([played.slice(0, 2) as Square, played.slice(2, 4) as Square, BRILLIANT_ARROW]);
+      }
+      return list;
+    }
+    if (played && played.length >= 4) {
+      list.push([played.slice(0, 2) as Square, played.slice(2, 4) as Square, PLAYED_ARROW]);
+    }
+    if (best && best.length >= 4) {
+      list.push([best.slice(0, 2) as Square, best.slice(2, 4) as Square, BEST_ARROW]);
+    }
+    return list;
+  }, [activeFinding]);
+
+  // Notable moves sorted for the breakdown list (earliest first).
+  const sortedNotable = useMemo(() => {
+    const a = selectedGame?.analysis;
+    if (!a) return [];
+    return [...a.findings, ...(a.brilliancies ?? [])].sort((x, y) => x.ply - y.ply);
   }, [selectedGame]);
 
   const pairedMoves = useMemo(() => {
@@ -643,6 +718,7 @@ export default function GameLibrary({
                         boardOrientation={orientation}
                         arePiecesDraggable={false}
                         animationDuration={150}
+                        customArrows={arrows}
                         customBoardStyle={{ borderRadius: "12px", boxShadow: "0 8px 30px rgba(0,0,0,0.4)" }}
                         customDarkSquareStyle={{ backgroundColor: "#1e293b" }}
                         customLightSquareStyle={{ backgroundColor: "#c3ccda" }}
@@ -650,6 +726,27 @@ export default function GameLibrary({
                     </div>
                   </div>
                 </div>
+
+                {/* When parked on a notable move, name it (brilliant, or played vs. best). */}
+                {activeFinding && (
+                  <p className="mt-2 text-center text-xs">
+                    {activeFinding.brilliant ? (
+                      <span className="text-fuchsia-300">
+                        Brilliant! {activeFinding.playedSan} — a sacrifice the engine loves
+                      </span>
+                    ) : (
+                      <>
+                        <span className="text-rose-300">You played {activeFinding.playedSan}</span>
+                        {activeFinding.bestSan && (
+                          <>
+                            {" "}·{" "}
+                            <span className="text-lime-300">best was {activeFinding.bestSan}</span>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </p>
+                )}
 
                 {/* Prev/Next controls */}
                 <div className="mt-3 flex items-center gap-2">
@@ -744,9 +841,20 @@ export default function GameLibrary({
 
                 {/* Findings summary */}
                 {selectedGame.analysis && (
-                  <div className="mt-4 flex w-full max-w-[440px] flex-wrap items-center justify-center gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-400">
+                  <div className="mt-4 flex w-full max-w-[440px] flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-400">
+                    {(selectedGame.analysis.brilliant ?? 0) > 0 && (
+                      <span className={`font-medium ${BRILLIANT_BADGE} rounded px-1.5 py-0.5`}>
+                        {selectedGame.analysis.brilliant} brilliant
+                      </span>
+                    )}
+                    <span className={`font-medium ${QUALITY_BADGE.best} rounded px-1.5 py-0.5`}>
+                      {selectedGame.analysis.best ?? 0} best
+                    </span>
+                    <span className={`font-medium ${QUALITY_BADGE.good} rounded px-1.5 py-0.5`}>
+                      {selectedGame.analysis.good ?? 0} good
+                    </span>
                     <span className={`font-medium ${QUALITY_BADGE.inaccuracy} rounded px-1.5 py-0.5`}>
-                      {selectedGame.analysis.inaccuracies} inaccuracies
+                      {selectedGame.analysis.inaccuracies} inacc.
                     </span>
                     <span className={`font-medium ${QUALITY_BADGE.mistake} rounded px-1.5 py-0.5`}>
                       {selectedGame.analysis.mistakes} mistakes
@@ -759,13 +867,74 @@ export default function GameLibrary({
                 )}
               </div>
 
+              {/* Key moments — click one to see it (and its best move) on the board */}
+              {sortedNotable.length > 0 && (
+                <div className="mt-4">
+                  <h3 className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-300">
+                    <AlertTriangle className="h-3.5 w-3.5 text-amber-400" /> Key moments ({sortedNotable.length})
+                  </h3>
+                  <ul className="flex max-h-[220px] flex-col gap-1.5 overflow-y-auto pr-1">
+                    {sortedNotable.map((f) => {
+                      const isActive = f.ply === ply;
+                      return (
+                        <li key={f.ply}>
+                          <button
+                            onClick={() => jumpToPly(f.ply)}
+                            className={`flex w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-2 text-left text-xs transition-colors ${
+                              isActive
+                                ? "border-emerald-500/50 bg-emerald-500/10"
+                                : "border-slate-800 bg-slate-950/40 hover:border-slate-700 hover:bg-slate-900/60"
+                            }`}
+                          >
+                            <span className="font-mono text-slate-500">{moveLabel(f.moveNo, f.ply)}</span>
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${qualityBadgeClass(
+                                f.quality,
+                                f.brilliant
+                              )}`}
+                            >
+                              {f.brilliant ? "brilliant" : f.quality}
+                            </span>
+                            {f.brilliant ? (
+                              <span className="text-slate-300">
+                                <span className="font-mono font-semibold text-fuchsia-300">{f.playedSan}</span> — a
+                                winning sacrifice
+                              </span>
+                            ) : (
+                              <>
+                                <span className="text-slate-300">
+                                  You played{" "}
+                                  <span className="font-mono font-semibold text-rose-300">{f.playedSan}</span>
+                                </span>
+                                {f.bestSan && (
+                                  <span className="text-slate-300">
+                                    · best{" "}
+                                    <span className="font-mono font-semibold text-lime-300">{f.bestSan}</span>
+                                  </span>
+                                )}
+                              </>
+                            )}
+                            <span className="ml-auto font-mono text-slate-500">
+                              {f.brilliant ? "!!" : lossLabel(f.cpLoss, f.allowsMateIn)}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <p className="mt-1.5 text-[11px] text-slate-600">
+                    Red = your move · green = engine's best · fuchsia = a brilliant move.
+                  </p>
+                </div>
+              )}
+
               {/* Move list */}
               <div className="mt-4 max-h-[260px] overflow-y-auto rounded-xl border border-slate-800 bg-slate-950/60 p-2">
                 <table className="w-full text-xs">
                   <tbody>
                     {pairedMoves.map((row) => {
-                      const wFinding = findingsByPly.get(row.wPly);
-                      const bFinding = findingsByPly.get(row.bPly);
+                      const wQual = qualityByPly.get(row.wPly);
+                      const bQual = qualityByPly.get(row.bPly);
                       return (
                         <tr key={row.no}>
                           <td className="w-8 py-0.5 pr-2 text-right font-mono text-slate-600">{row.no}.</td>
@@ -774,8 +943,10 @@ export default function GameLibrary({
                               <button
                                 onClick={() => jumpToPly(row.wPly + 1)}
                                 className={`rounded px-1.5 py-0.5 font-mono transition-colors ${
-                                  ply === row.wPly + 1 ? "bg-emerald-500/20 text-emerald-300" : "text-slate-300 hover:bg-slate-800"
-                                } ${wFinding ? QUALITY_BADGE[wFinding.quality] : ""}`}
+                                  ply === row.wPly + 1
+                                    ? "ring-1 ring-emerald-400/60"
+                                    : "hover:bg-slate-800"
+                                } ${wQual ? qualityBadgeClass(wQual.quality, wQual.brilliant) : "text-slate-300"}`}
                               >
                                 {row.w}
                               </button>
@@ -786,8 +957,10 @@ export default function GameLibrary({
                               <button
                                 onClick={() => jumpToPly(row.bPly + 1)}
                                 className={`rounded px-1.5 py-0.5 font-mono transition-colors ${
-                                  ply === row.bPly + 1 ? "bg-emerald-500/20 text-emerald-300" : "text-slate-300 hover:bg-slate-800"
-                                } ${bFinding ? QUALITY_BADGE[bFinding.quality] : ""}`}
+                                  ply === row.bPly + 1
+                                    ? "ring-1 ring-emerald-400/60"
+                                    : "hover:bg-slate-800"
+                                } ${bQual ? qualityBadgeClass(bQual.quality, bQual.brilliant) : "text-slate-300"}`}
                               >
                                 {row.b}
                               </button>

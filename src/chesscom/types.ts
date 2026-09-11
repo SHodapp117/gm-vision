@@ -80,13 +80,30 @@ export interface GameFinding {
   phase: "opening" | "middlegame" | "endgame";
   /** Set when the played move allowed the opponent a forced mate. */
   allowsMateIn?: number;
+  /** A strong move that gives up material and is still the engine's top choice. */
+  brilliant?: boolean;
+}
+
+/** Every analysed player move's quality — drives per-move badges and counts. */
+export interface MoveQualityEntry {
+  ply: number;
+  quality: MoveQuality;
+  brilliant?: boolean;
 }
 
 export interface GameAnalysis {
+  /** Notable errors (inaccuracy/mistake/blunder) — also what the coach insights read. */
   findings: GameFinding[];
+  /** Brilliant moves (best + a material sacrifice), highlighted alongside findings. */
+  brilliancies: GameFinding[];
+  /** Quality of every analysed player move, for move-list badges. */
+  moveQualities: MoveQualityEntry[];
   inaccuracies: number;
   mistakes: number;
   blunders: number;
+  good: number;
+  best: number;
+  brilliant: number;
   /** Average centipawn loss across the player's analysed moves. */
   avgCpLoss: number;
   analyzedAt: number; // unix ms
