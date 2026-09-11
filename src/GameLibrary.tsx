@@ -1020,6 +1020,11 @@ export default function GameLibrary({
                             >
                               {f.brilliant ? "brilliant" : f.quality}
                             </span>
+                            {f.motif && !f.brilliant && (
+                              <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-300">
+                                missed {f.motif}
+                              </span>
+                            )}
                             {f.brilliant ? (
                               <span className="text-slate-300">
                                 <span className="font-mono font-semibold text-fuchsia-300">{f.playedSan}</span> — a
@@ -1039,8 +1044,11 @@ export default function GameLibrary({
                                 )}
                               </>
                             )}
-                            <span className="ml-auto font-mono text-slate-500">
-                              {f.brilliant ? "!!" : lossLabel(f.cpLoss, f.allowsMateIn)}
+                            <span className="ml-auto flex items-center gap-2 font-mono text-slate-500">
+                              {f.secondsLeft !== undefined && (
+                                <span title="clock at this move">{Math.round(f.secondsLeft)}s</span>
+                              )}
+                              <span>{f.brilliant ? "!!" : lossLabel(f.cpLoss, f.allowsMateIn)}</span>
                             </span>
                           </button>
                         </li>
