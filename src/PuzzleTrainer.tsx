@@ -21,6 +21,8 @@ import {
 } from "lucide-react";
 import { type Puzzle } from "./data/puzzles";
 import { puzzlePosition, type TrainingPosition } from "./game/trainingPosition";
+import { createIndexedDbStore } from "./chesscom/store";
+import { generatePuzzles, type GeneratedPuzzle } from "./chesscom/generatePuzzles";
 import {
   getProgress,
   updateProgress,
@@ -77,6 +79,10 @@ function parseUci(uci: string): Uci {
 }
 
 type Status = "opponent" | "solving" | "solved" | "failed";
+type PuzzleMode = "curated" | "mistakes";
+
+/** Shared IndexedDB handle (same "gmvision" DB the Games tab writes to). */
+const mistakeStore = createIndexedDbStore();
 
 /* ------------------------------------------------------------------ */
 /*  Main component                                                     */
@@ -84,9 +90,13 @@ type Status = "opponent" | "solving" | "solved" | "failed";
 interface PuzzleTrainerProps {
   /** Hand the current puzzle position to the Play tab as a normal game. */
   onPlayFromPuzzle?: (pos: TrainingPosition) => void;
+  /** Start directly in "My mistakes" mode (deep-linked from the Games tab). */
+  startMode?: PuzzleMode | null;
+  /** Called once `startMode` has been applied, so the parent can clear it. */
+  onStartModeConsumed?: () => void;
 }
 
-export default function PuzzleTrainer({ onPlayFromPuzzle }: PuzzleTrainerProps = {}) {
+export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartModeConsumed }: PuzzleTrainerProps = {}) {
   // --- Live game / puzzle state (refs drive timer-safe logic) --------
   const gameRef = useRef(new Chess());
   const movesRef = useRef<string[]>([]);
@@ -109,6 +119,16 @@ export default function PuzzleTrainer({ onPlayFromPuzzle }: PuzzleTrainerProps =
   const [lastDelta, setLastDelta] = useState<number | null>(null);
   const [theme, setTheme] = useState<string>(""); // "" = all themes
   const [bandLabel, setBandLabel] = useState<string>(""); // "" = auto (near rating)
+
+  // --- Puzzle source: curated Lichess pool vs the player's own mistakes ---
+  const [mode, setMode] = useState<PuzzleMode>("curated");
+  const modeRef = useRef<PuzzleMode>("curated");
+  modeRef.current = mode;
+  const [mistakeCount, setMistakeCount] = useState(0);
+  const [noMistakes, setNoMistakes] = useState(false);
+  const mistakesRef = useRef<GeneratedPuzzle[]>([]);
+  const mistakeIdxRef = useRef(0);
+  const mistakeMetaRef = useRef<Map<string, GeneratedPuzzle>>(new Map());
 
   const progressRef = useRef(progress);
   progressRef.current = progress;
@@ -199,13 +219,66 @@ export default function PuzzleTrainer({ onPlayFromPuzzle }: PuzzleTrainerProps =
     loadPuzzle(p, false);
   }, [theme, currentBand, loadPuzzle]);
 
+  /* ---- "My mistakes" pool: puzzles built from the player's blunders ---- */
+  const loadMistakes = useCallback(async (): Promise<GeneratedPuzzle[]> => {
+    let list: GeneratedPuzzle[] = [];
+    try {
+      list = generatePuzzles(await mistakeStore.allGames());
+    } catch {
+      list = [];
+    }
+    mistakesRef.current = list;
+    mistakeIdxRef.current = 0;
+    mistakeMetaRef.current = new Map(list.map((p) => [p.id, p]));
+    setMistakeCount(list.length);
+    return list;
+  }, []);
+
+  const loadNextMistake = useCallback(() => {
+    const list = mistakesRef.current;
+    if (!list.length) {
+      setNoMistakes(true);
+      return;
+    }
+    setNoMistakes(false);
+    const p = list[mistakeIdxRef.current % list.length];
+    mistakeIdxRef.current++;
+    loadPuzzle(p, false);
+  }, [loadPuzzle]);
+
+  const chooseMode = useCallback(
+    async (m: PuzzleMode) => {
+      setMode(m);
+      modeRef.current = m;
+      setLastDelta(null);
+      if (m === "mistakes") {
+        const list = await loadMistakes();
+        if (list.length) loadNextMistake();
+        else {
+          setNoMistakes(true);
+          setPuzzle(null);
+        }
+      } else {
+        setNoMistakes(false);
+        nextPuzzle();
+      }
+    },
+    [loadMistakes, loadNextMistake, nextPuzzle]
+  );
+
   // First puzzle on mount (guarded against StrictMode double-invoke).
   useEffect(() => {
     if (didInitRef.current) return;
     didInitRef.current = true;
-    nextPuzzle();
+    if (startMode === "mistakes") {
+      void chooseMode("mistakes");
+      onStartModeConsumed?.();
+    } else {
+      nextPuzzle();
+      void loadMistakes(); // populate the mistake count for the mode toggle
+    }
     return () => clearTimer();
-  }, [nextPuzzle, clearTimer]);
+  }, [nextPuzzle, clearTimer, startMode, chooseMode, loadMistakes, onStartModeConsumed]);
 
   // Keep a ref to the current puzzle for use inside stable callbacks.
   const puzzleRef = useRef<Puzzle | null>(null);
@@ -348,8 +421,9 @@ export default function PuzzleTrainer({ onPlayFromPuzzle }: PuzzleTrainerProps =
 
   const handleNext = useCallback(() => {
     setLastDelta(null);
-    nextPuzzle();
-  }, [nextPuzzle]);
+    if (modeRef.current === "mistakes") loadNextMistake();
+    else nextPuzzle();
+  }, [nextPuzzle, loadNextMistake]);
 
   const handleHint = useCallback(() => {
     if (status !== "solving") return;
@@ -493,6 +567,8 @@ export default function PuzzleTrainer({ onPlayFromPuzzle }: PuzzleTrainerProps =
   /* ---- Derived UI text -------------------------------------------- */
   const orientation = solverColorRef.current === "w" ? "white" : "black";
   const solverName = solverColorRef.current === "w" ? "White" : "Black";
+  // If the current puzzle came from the player's own game, its source metadata.
+  const genMeta = puzzle ? mistakeMetaRef.current.get(puzzle.id) : undefined;
   const draggable =
     status === "solving" && gameRef.current.turn() === solverColorRef.current;
 
@@ -625,6 +701,37 @@ export default function PuzzleTrainer({ onPlayFromPuzzle }: PuzzleTrainerProps =
 
           {/* -------- Control panel column -------- */}
           <div className="flex flex-col gap-5">
+            {/* Puzzle source: curated pool vs. your own mistakes */}
+            <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 backdrop-blur-xl">
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    ["curated", "Curated"],
+                    ["mistakes", mistakeCount ? `My mistakes (${mistakeCount})` : "My mistakes"],
+                  ] as const
+                ).map(([m, label]) => (
+                  <button
+                    key={m}
+                    onClick={() => chooseMode(m)}
+                    aria-pressed={mode === m}
+                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${
+                      mode === m
+                        ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300 shadow-inner"
+                        : "border-slate-800 bg-slate-800/40 text-slate-400 hover:border-slate-700"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {mode === "mistakes" && noMistakes && (
+                <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                  No mistakes to train yet — import and analyze games in the Games tab (Coach Report → “Analyze N
+                  games”), then your blunders show up here as puzzles.
+                </p>
+              )}
+            </section>
+
             {/* Stats strip */}
             <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 backdrop-blur-xl">
               <div className="grid grid-cols-3 gap-3">
@@ -724,6 +831,22 @@ export default function PuzzleTrainer({ onPlayFromPuzzle }: PuzzleTrainerProps =
                     {status === "opponent"
                       ? "Watch the opponent's move, then find the strongest reply."
                       : `You are ${solverName}. ${statusLine}.`}
+                  </p>
+                </div>
+              )}
+
+              {/* Source banner for a puzzle built from your own game */}
+              {genMeta && (
+                <div className="mb-4 flex gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3.5">
+                  <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-indigo-300" />
+                  <p className="text-xs leading-relaxed text-indigo-100">
+                    From your game vs <span className="font-semibold">{genMeta.opponent}</span> — you played{" "}
+                    <span className="font-mono font-semibold text-rose-300">{genMeta.playedSan}</span> ({genMeta.quality}).
+                    {status === "solving" || status === "opponent"
+                      ? " Find the move you missed."
+                      : genMeta.bestSan
+                      ? <> The engine preferred <span className="font-mono font-semibold text-emerald-300">{genMeta.bestSan}</span>.</>
+                      : null}
                   </p>
                 </div>
               )}

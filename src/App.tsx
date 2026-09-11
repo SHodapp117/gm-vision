@@ -35,6 +35,13 @@ export default function App() {
     setTab("play");
   }, []);
 
+  // "Practice your mistakes" from the Games tab → open Puzzles in mistakes mode.
+  const [puzzleStartMode, setPuzzleStartMode] = useState<"mistakes" | null>(null);
+  const onPracticeMistakes = useCallback(() => {
+    setPuzzleStartMode("mistakes");
+    setTab("puzzles");
+  }, []);
+
   useEffect(() => {
     try {
       localStorage.setItem(TAB_KEY, tab);
@@ -91,7 +98,11 @@ export default function App() {
             </div>
           }
         >
-          <PuzzleTrainer onPlayFromPuzzle={onPlayFromPosition} />
+          <PuzzleTrainer
+            onPlayFromPuzzle={onPlayFromPosition}
+            startMode={puzzleStartMode}
+            onStartModeConsumed={() => setPuzzleStartMode(null)}
+          />
         </Suspense>
       )}
       {tab === "games" && (
@@ -102,7 +113,7 @@ export default function App() {
             </div>
           }
         >
-          <GameLibrary onPlayFromPosition={onPlayFromPosition} />
+          <GameLibrary onPlayFromPosition={onPlayFromPosition} onPracticeMistakes={onPracticeMistakes} />
         </Suspense>
       )}
 

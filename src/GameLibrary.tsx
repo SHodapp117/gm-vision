@@ -19,6 +19,7 @@ import {
   Trophy,
   Gauge,
   X,
+  Puzzle as PuzzleIcon,
 } from "lucide-react";
 
 import { createClient, ChessComError, isValidUsername, type ChessComClient } from "./chesscom/client";
@@ -26,6 +27,7 @@ import { importGames } from "./chesscom/import";
 import { createIndexedDbStore } from "./chesscom/store";
 import { analyzeGame, analyzeGames } from "./chesscom/analyzeGame";
 import { buildCoachReport } from "./chesscom/metaReport";
+import { generatePuzzles } from "./chesscom/generatePuzzles";
 import type {
   GameFinding,
   GameStore,
@@ -165,8 +167,10 @@ interface AnalyzeProgress {
 
 export default function GameLibrary({
   onPlayFromPosition,
+  onPracticeMistakes,
 }: {
   onPlayFromPosition: (pos: TrainingPosition) => void;
+  onPracticeMistakes?: () => void;
 }) {
   /* ---- Connect / import state -------------------------------------- */
   const [username, setUsername] = useState<string>(() => readStoredUsername());
@@ -446,6 +450,7 @@ export default function GameLibrary({
   /* ---- Coach Report — meta-analysis over the whole game history ---------- */
   const report = useMemo(() => buildCoachReport(games), [games]);
   const unanalyzedCount = useMemo(() => games.filter((g) => !g.analyzed).length, [games]);
+  const mistakePuzzleCount = useMemo(() => generatePuzzles(games).length, [games]);
 
   // Batch-analyze the most-recent unanalyzed games to deepen the report. Each
   // game is persisted + folded into state as it finishes, so the report updates
@@ -636,6 +641,16 @@ export default function GameLibrary({
             </div>
 
             <p className="mb-3 text-sm leading-relaxed text-slate-300">{report.headline}</p>
+
+            {onPracticeMistakes && mistakePuzzleCount > 0 && (
+              <button
+                onClick={onPracticeMistakes}
+                className="mb-4 flex items-center gap-2 rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-200 transition-all hover:border-indigo-400/60 hover:bg-indigo-500/15"
+              >
+                <PuzzleIcon className="h-3.5 w-3.5" /> Practice {mistakePuzzleCount}{" "}
+                {mistakePuzzleCount === 1 ? "puzzle" : "puzzles"} from your mistakes →
+              </button>
+            )}
 
             {batchRunning && batchProgress && (
               <div className="mb-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
