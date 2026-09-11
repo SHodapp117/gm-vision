@@ -202,6 +202,7 @@ export default function GameLibrary({
 
   /* ---- Batch ("Analyze N games") state for the Coach Report ------------ */
   const [batchRunning, setBatchRunning] = useState(false);
+  const [batchSize, setBatchSize] = useState(20); // 0 = all unanalyzed
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
   const batchAbortRef = useRef<AbortController | null>(null);
 
@@ -457,11 +458,11 @@ export default function GameLibrary({
   // live; cancellable via the abort controller.
   const handleAnalyzeBatch = useCallback(async () => {
     if (batchRunning) return;
-    const BATCH = 20;
+    const cap = batchSize === 0 ? Infinity : batchSize;
     const targets = games
       .filter((g) => !g.analyzed)
       .sort((a, b) => b.endTime - a.endTime)
-      .slice(0, BATCH);
+      .slice(0, cap);
     if (!targets.length) return;
 
     setBatchRunning(true);
@@ -485,7 +486,7 @@ export default function GameLibrary({
       setBatchProgress(null);
       batchAbortRef.current = null;
     }
-  }, [batchRunning, games]);
+  }, [batchRunning, batchSize, games]);
 
   const cancelBatch = useCallback(() => batchAbortRef.current?.abort(), []);
 
@@ -630,13 +631,29 @@ export default function GameLibrary({
                     </button>
                   </div>
                 ) : (
-                  <button
-                    onClick={handleAnalyzeBatch}
-                    title="Analyze your most recent unanalyzed games to unlock deeper tips"
-                    className="flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-semibold text-emerald-200 transition-all hover:border-emerald-400/60 hover:bg-emerald-500/15"
-                  >
-                    <Gauge className="h-3.5 w-3.5" /> Analyze {Math.min(20, unanalyzedCount)} games
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={batchSize}
+                      onChange={(e) => setBatchSize(Number(e.target.value))}
+                      title="How many of your most-recent unanalyzed games to analyze"
+                      className="rounded-lg border border-slate-800 bg-slate-800/60 px-2 py-1.5 text-xs text-slate-200 outline-none transition-colors focus:border-emerald-500/50"
+                    >
+                      {[10, 20, 50, 100].map((n) => (
+                        <option key={n} value={n}>
+                          {n} games
+                        </option>
+                      ))}
+                      <option value={0}>All ({unanalyzedCount})</option>
+                    </select>
+                    <button
+                      onClick={handleAnalyzeBatch}
+                      title="Analyze your most recent unanalyzed games to unlock deeper tips"
+                      className="flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-semibold text-emerald-200 transition-all hover:border-emerald-400/60 hover:bg-emerald-500/15"
+                    >
+                      <Gauge className="h-3.5 w-3.5" /> Analyze{" "}
+                      {batchSize === 0 ? unanalyzedCount : Math.min(batchSize, unanalyzedCount)}
+                    </button>
+                  </div>
                 ))}
             </div>
 
