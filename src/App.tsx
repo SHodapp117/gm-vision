@@ -1,21 +1,23 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
-import { Crown, Swords, Puzzle as PuzzleIcon } from "lucide-react";
+import { Crown, Swords, Puzzle as PuzzleIcon, Library } from "lucide-react";
 import ChessTrainer from "./ChessTrainer";
 import Credits from "./components/Credits";
 import type { TrainingPosition } from "./game/trainingPosition";
 
-// Lazy-loaded so the ~900KB bundled puzzle dataset isn't pulled into the
-// initial (Play) bundle — only when the user opens the Puzzles tab.
+// Lazy-loaded so heavy, tab-specific code isn't pulled into the initial (Play)
+// bundle — the ~900KB puzzle dataset for Puzzles, and the Chess.com import +
+// IndexedDB layer for Games — only when that tab is first opened.
 const PuzzleTrainer = lazy(() => import("./PuzzleTrainer"));
+const GameLibrary = lazy(() => import("./GameLibrary"));
 
-type Tab = "play" | "puzzles";
+type Tab = "play" | "puzzles" | "games";
 
 const TAB_KEY = "gmv.activeTab.v1";
 
 function readTab(): Tab {
   try {
     const raw = localStorage.getItem(TAB_KEY);
-    return raw === "puzzles" ? "puzzles" : "play";
+    return raw === "puzzles" || raw === "games" ? raw : "play";
   } catch {
     return "play";
   }
@@ -24,11 +26,11 @@ function readTab(): Tab {
 export default function App() {
   const [tab, setTab] = useState<Tab>(() => readTab());
 
-  // A position handed from the Puzzles tab to Play ("Play from here"). Set it,
-  // switch to Play; ChessTrainer starts it and calls back to clear it.
+  // A position handed to Play ("Play from here") from the Puzzles or Games tab.
+  // Set it, switch to Play; ChessTrainer starts it and calls back to clear it.
   const [playHandoff, setPlayHandoff] = useState<TrainingPosition | null>(null);
 
-  const onPlayFromPuzzle = useCallback((pos: TrainingPosition) => {
+  const onPlayFromPosition = useCallback((pos: TrainingPosition) => {
     setPlayHandoff(pos);
     setTab("play");
   }, []);
@@ -73,13 +75,15 @@ export default function App() {
           <div className="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/60 p-1">
             <NavButton id="play" label="Play" icon={<Swords className="h-4 w-4" />} />
             <NavButton id="puzzles" label="Puzzles" icon={<PuzzleIcon className="h-4 w-4" />} />
+            <NavButton id="games" label="Games" icon={<Library className="h-4 w-4" />} />
           </div>
         </div>
       </nav>
 
-      {tab === "play" ? (
+      {tab === "play" && (
         <ChessTrainer initialPosition={playHandoff} onConsumed={() => setPlayHandoff(null)} />
-      ) : (
+      )}
+      {tab === "puzzles" && (
         <Suspense
           fallback={
             <div className="flex items-center justify-center py-32 text-sm text-slate-500">
@@ -87,7 +91,18 @@ export default function App() {
             </div>
           }
         >
-          <PuzzleTrainer onPlayFromPuzzle={onPlayFromPuzzle} />
+          <PuzzleTrainer onPlayFromPuzzle={onPlayFromPosition} />
+        </Suspense>
+      )}
+      {tab === "games" && (
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center py-32 text-sm text-slate-500">
+              Loading games…
+            </div>
+          }
+        >
+          <GameLibrary onPlayFromPosition={onPlayFromPosition} />
         </Suspense>
       )}
 
