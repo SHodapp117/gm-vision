@@ -25,8 +25,9 @@ don't; the pub API serves anonymous cross-origin requests fine.
 | `pgn.ts` | `normalizeGame(apiGame, account)` — chess.js `loadPgn` (retries with clock/NAG comments stripped), derives SAN moves, the account's colour + win/loss/draw, opponent, ECO. |
 | `store.ts` | `createIndexedDbStore()` (prod) and `createMemoryStore()` (tests) — both implement `GameStore`. DB `gmvision`, stores `games` (key `uuid`) and `imports` (key `username`). |
 | `import.ts` | `importGames(client, store, username, opts)` — idempotent import (see below). |
-| `analyzeGame.ts` | `analyzeGame(game, analyze, opts)` — replays the game and classifies the player's moves via `engine/classify.ts` (`evaluateMove`); returns a `GameAnalysis`. Engine is injected, never imported, so it stays testable and env-free. |
-| `insights.ts` | `buildInsights(games)` — aggregates analysed games into coach-facing patterns (error rate, blunders-by-phase, "loses material after castling", weakest time class, worst opening). Pure. |
+| `analyzeGame.ts` | `analyzeGame(game, analyze, opts)` — replays the game and classifies the player's moves via `engine/classify.ts` (`evaluateMove`); returns a `GameAnalysis` (per-move qualities incl. good/best/brilliant). `analyzeGames(games, analyze, {onGame,onProgress,signal})` batch-analyzes sequentially, persisting each, cancellable. Engine is injected. |
+| `insights.ts` | Engine-tier pattern miners over analysed games. `engineInsights(games)` (error rate, blunders-by-phase, castling) feeds the Coach Report; `buildInsights(games)` is the capped 5-insight variant. Exports the shared helpers `openingKey`/`moverColors`/`analysedGames`/`slugify`. Pure. |
+| `metaReport.ts` | `buildCoachReport(games)` — the whole-history meta-analysis. Metadata-tier detectors (win rate by colour / time control / opening / opponent strength, how-you-lose, rating trend) over ALL games, merged with `engineInsights` over analysed games, into a headline + stats + prioritized, actionable recommendations (each with a tip and example-game uuids). Pure/deterministic. |
 
 UI lives in `src/GameLibrary.tsx` (the **Games** tab), wired in `src/App.tsx`.
 
