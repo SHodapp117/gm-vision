@@ -11,7 +11,6 @@ import {
   X,
   Flame,
   Trophy,
-  TrendingUp,
   Filter,
   Gauge,
   Sparkles,
@@ -141,7 +140,6 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
 
   // --- Progress + filters -------------------------------------------
   const [progress, setProgress] = useState<TacticsProgress>(() => getProgress());
-  const [lastDelta, setLastDelta] = useState<number | null>(null);
   const [theme, setTheme] = useState<string>(""); // "" = all themes
   const [bandLabel, setBandLabel] = useState<string>(""); // "" = auto (near rating)
 
@@ -300,7 +298,6 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
     async (m: PuzzleMode) => {
       setMode(m);
       modeRef.current = m;
-      setLastDelta(null);
       if (m === "mistakes") {
         const list = await loadMistakes();
         if (list.length) loadNextMistake();
@@ -365,9 +362,10 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
       setSessionPoints((p) => p + pts);
       setSessionCount((n) => n + 1);
 
-      const { progress: next, delta } = updateProgress(puzzleRef.current.rating, solved);
+      // Still updates the hidden tactics rating that drives "near your level"
+      // puzzle selection, plus streak / win-rate counters — just not shown.
+      const { progress: next } = updateProgress(puzzleRef.current.rating, solved);
       setProgress(next);
-      setLastDelta(delta);
 
       // In "My mistakes" mode this is also a spaced-repetition review: schedule
       // the card and tally its motif. Refs only, so the empty dep array holds.
@@ -549,7 +547,6 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
   }, [puzzle, loadPuzzle]);
 
   const handleNext = useCallback(() => {
-    setLastDelta(null);
     if (modeRef.current === "mistakes") loadNextMistake();
     else nextPuzzle();
   }, [nextPuzzle, loadNextMistake]);
@@ -578,7 +575,6 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
         band: currentBand(),
         userRating: progressRef.current.rating,
       });
-      setLastDelta(null);
       loadPuzzle(p, false);
     },
     [currentBand, loadPuzzle]
@@ -594,7 +590,6 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
         band,
         userRating: progressRef.current.rating,
       });
-      setLastDelta(null);
       loadPuzzle(p, false);
     },
     [theme, loadPuzzle]
@@ -603,7 +598,6 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
   const handleResetProgress = useCallback(() => {
     const fresh = resetProgress();
     setProgress(fresh);
-    setLastDelta(null);
   }, []);
 
   /* ---- Derived: the currently-expected solver move ---------------- */
@@ -754,7 +748,7 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
             </div>
             <div>
               <h1 className="text-xl font-semibold tracking-tight">Tactics Trainer</h1>
-              <p className="text-xs text-slate-400">Solve Lichess puzzles &amp; grow your tactics rating</p>
+              <p className="text-xs text-slate-400">Beat the clock &amp; rack up points on Lichess puzzles</p>
             </div>
           </div>
           <span
@@ -985,22 +979,20 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
             {/* Stats strip */}
             <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 backdrop-blur-xl">
               <div className="grid grid-cols-3 gap-3">
-                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-center">
+                {/* Session points — the timed score (replaces the Elo rating) */}
+                <div
+                  className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-center"
+                  title="Points earned this session — up to 10 per puzzle by how fast you solve. Resets each session."
+                >
                   <div className="flex items-center justify-center gap-1 text-[11px] font-medium text-slate-400">
-                    <TrendingUp className="h-3.5 w-3.5" /> Rating
+                    <Timer className="h-3.5 w-3.5" /> Points
                   </div>
-                  <div className="mt-1 font-mono text-2xl font-semibold text-emerald-300">
-                    {progress.rating}
+                  <div className="mt-1 font-mono text-2xl font-semibold text-indigo-300">
+                    {sessionPoints}
                   </div>
-                  {lastDelta !== null && (
-                    <div
-                      className="text-xs font-semibold"
-                      style={{ color: lastDelta >= 0 ? SUCCESS : FAILURE }}
-                    >
-                      {lastDelta >= 0 ? "+" : ""}
-                      {lastDelta}
-                    </div>
-                  )}
+                  <div className="text-[10px] text-slate-500">
+                    {sessionCount > 0 ? `${sessionCount} · avg ${sessionAvg}/10` : "this session"}
+                  </div>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-center">
                   <div className="flex items-center justify-center gap-1 text-[11px] font-medium text-slate-400">
@@ -1024,28 +1016,13 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
                   <div className="text-[10px] text-slate-500">{progress.solved} solved · lifetime</div>
                 </div>
               </div>
-              {/* Per-session scoring — points out of 10 per puzzle */}
-              <div className="mt-3 flex items-center justify-between rounded-xl border border-indigo-500/25 bg-indigo-500/5 px-3.5 py-2.5">
-                <div className="flex items-center gap-2 text-xs text-slate-300">
-                  <Timer className="h-3.5 w-3.5 text-indigo-300" />
-                  <span>
-                    This session:{" "}
-                    <span className="font-mono font-semibold text-indigo-200">{sessionPoints}</span> pts
-                    {sessionCount > 0 && (
-                      <span className="text-slate-500">
-                        {" "}
-                        · {sessionCount} puzzle{sessionCount === 1 ? "" : "s"} · avg{" "}
-                        <span className="font-mono text-slate-300">{sessionAvg}</span>/10
-                      </span>
-                    )}
-                  </span>
-                </div>
+              <div className="mt-2.5 flex items-center justify-end">
                 <button
                   onClick={handleResetProgress}
-                  title="Reset lifetime rating, streak & win rate"
-                  className="inline-flex shrink-0 items-center gap-1 text-[10px] text-slate-500 transition-colors hover:text-slate-300"
+                  title="Reset lifetime streak & win rate"
+                  className="inline-flex items-center gap-1 text-[10px] text-slate-500 transition-colors hover:text-slate-300"
                 >
-                  <RefreshCw className="h-2.5 w-2.5" /> reset lifetime
+                  <RefreshCw className="h-2.5 w-2.5" /> reset lifetime stats
                 </button>
               </div>
             </section>
@@ -1207,7 +1184,7 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
                 onChange={(e) => onBandChange(e.target.value)}
                 className="w-full rounded-lg border border-slate-800 bg-slate-800/60 px-3 py-2 text-sm text-slate-200 outline-none transition-colors focus:border-emerald-500/50"
               >
-                <option value="">Near my rating (auto)</option>
+                <option value="">Near your level (auto)</option>
                 {RATING_BANDS.map((b) => (
                   <option key={b.label} value={b.label}>
                     {b.label}
@@ -1215,7 +1192,7 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
                 ))}
               </select>
               <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-                Rating &amp; streak update on your first attempt only — retries are for
+                Points, streak &amp; win rate update on your first attempt only — retries are for
                 learning and never change your score.
               </p>
             </section>
