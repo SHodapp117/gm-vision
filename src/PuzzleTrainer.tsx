@@ -24,6 +24,13 @@ import { puzzlePosition, type TrainingPosition } from "./game/trainingPosition";
 import { createIndexedDbStore } from "./chesscom/store";
 import { generatePuzzles, type GeneratedPuzzle } from "./chesscom/generatePuzzles";
 import {
+  getDueOrder,
+  recordReview,
+  summary as reviewSummaryOf,
+  MASTERED_BOX,
+  type ReviewSummary,
+} from "./puzzles/review";
+import {
   getProgress,
   updateProgress,
   resetProgress,
@@ -129,6 +136,12 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
   const mistakesRef = useRef<GeneratedPuzzle[]>([]);
   const mistakeIdxRef = useRef(0);
   const mistakeMetaRef = useRef<Map<string, GeneratedPuzzle>>(new Map());
+  const [reviewSummary, setReviewSummary] = useState<ReviewSummary | null>(null);
+
+  // Recompute the spaced-repetition summary over the current mistake pool.
+  const refreshReviewSummary = useCallback(() => {
+    setReviewSummary(reviewSummaryOf(mistakesRef.current));
+  }, []);
 
   const progressRef = useRef(progress);
   progressRef.current = progress;
@@ -227,12 +240,17 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
     } catch {
       list = [];
     }
+    // Order once for the session by spaced repetition (due first, weakest box,
+    // focus motif nudged forward). The walk below keeps this fixed order — we
+    // never re-sort on each answer, only the summary card refreshes.
+    list = getDueOrder(list);
     mistakesRef.current = list;
     mistakeIdxRef.current = 0;
     mistakeMetaRef.current = new Map(list.map((p) => [p.id, p]));
     setMistakeCount(list.length);
+    refreshReviewSummary();
     return list;
-  }, []);
+  }, [refreshReviewSummary]);
 
   const loadNextMistake = useCallback(() => {
     const list = mistakesRef.current;
@@ -285,13 +303,24 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
   puzzleRef.current = puzzle;
 
   /* ---- Result recording (once per puzzle) ------------------------- */
-  const recordResult = useCallback((solved: boolean) => {
-    if (resultRecordedRef.current || !puzzleRef.current) return;
-    resultRecordedRef.current = true;
-    const { progress: next, delta } = updateProgress(puzzleRef.current.rating, solved);
-    setProgress(next);
-    setLastDelta(delta);
-  }, []);
+  const recordResult = useCallback(
+    (solved: boolean) => {
+      if (resultRecordedRef.current || !puzzleRef.current) return;
+      resultRecordedRef.current = true;
+      const { progress: next, delta } = updateProgress(puzzleRef.current.rating, solved);
+      setProgress(next);
+      setLastDelta(delta);
+
+      // In "My mistakes" mode this is also a spaced-repetition review: schedule
+      // the card and tally its motif. Refs only, so the empty dep array holds.
+      if (modeRef.current === "mistakes") {
+        const meta = mistakeMetaRef.current.get(puzzleRef.current.id);
+        recordReview(puzzleRef.current.id, solved, meta?.motif);
+        refreshReviewSummary();
+      }
+    },
+    [refreshReviewSummary]
+  );
 
   const flashThen = useCallback((kind: "good" | "bad") => {
     setFlash(kind);
@@ -731,6 +760,75 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
                 </p>
               )}
             </section>
+
+            {/* Spaced-repetition review summary (mistakes mode only) */}
+            {mode === "mistakes" && reviewSummary && reviewSummary.total > 0 && (
+              <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 backdrop-blur-xl">
+                <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-200">
+                  <RefreshCw className="h-4 w-4 text-indigo-400" /> Review plan
+                </h2>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-center">
+                    <div className="text-[11px] font-medium text-slate-400">Due now</div>
+                    <div className="mt-1 font-mono text-2xl font-semibold text-indigo-300">
+                      {reviewSummary.due}
+                    </div>
+                    <div className="text-[10px] text-slate-500">of {reviewSummary.total}</div>
+                  </div>
+                  <div
+                    className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-center"
+                    title={`Solved first-try enough times to reach box ${MASTERED_BOX}+ (long review interval)`}
+                  >
+                    <div className="text-[11px] font-medium text-slate-400">Mastered</div>
+                    <div className="mt-1 font-mono text-2xl font-semibold text-emerald-300">
+                      {reviewSummary.mastered}
+                    </div>
+                    <div className="text-[10px] text-slate-500">low-error</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-center">
+                    <div className="flex items-center justify-center gap-1 text-[11px] font-medium text-slate-400">
+                      <Flame className="h-3.5 w-3.5" /> Streak
+                    </div>
+                    <div className="mt-1 font-mono text-2xl font-semibold text-slate-100">
+                      {reviewSummary.streak}
+                    </div>
+                    <div className="text-[10px] text-slate-500">best {reviewSummary.bestStreak}</div>
+                  </div>
+                </div>
+
+                {reviewSummary.focusMotif && (
+                  <div className="mt-3 flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+                    <Target className="h-4 w-4 shrink-0 text-amber-300" />
+                    <p className="text-xs leading-relaxed text-amber-100">
+                      Focus: <span className="font-semibold">{prettyTheme(reviewSummary.focusMotif)}</span> is your
+                      weakest motif right now — those puzzles are served first.
+                    </p>
+                  </div>
+                )}
+
+                {reviewSummary.motifAccuracy.length > 0 && (
+                  <div className="mt-3 space-y-1.5">
+                    {reviewSummary.motifAccuracy.map((m) => (
+                      <div key={m.motif} className="flex items-center gap-2 text-[11px]">
+                        <span className="w-14 shrink-0 text-slate-400">{prettyTheme(m.motif)}</span>
+                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${m.pct}%`,
+                              background: m.pct >= 60 ? SUCCESS : m.pct >= 35 ? HINT : FAILURE,
+                            }}
+                          />
+                        </div>
+                        <span className="w-16 shrink-0 text-right font-mono text-slate-400">
+                          {m.correct}/{m.seen} · {m.pct}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
 
             {/* Stats strip */}
             <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 backdrop-blur-xl">

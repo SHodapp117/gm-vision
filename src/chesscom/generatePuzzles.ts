@@ -25,6 +25,7 @@ export interface GeneratedPuzzle extends Puzzle {
   playedSan: string; // the move you actually played (the error)
   bestSan?: string; // the move you should have found
   quality: "mistake" | "blunder";
+  motif?: string; // tactical motif missed (mate/fork/pin), when detected
 }
 
 const uciOf = (m: { from: string; to: string; promotion?: string }): string =>
@@ -84,6 +85,7 @@ function puzzleFromFinding(game: ImportedGame, ply: number, bestUci: string | un
       playedSan: finding.playedSan,
       bestSan: finding.bestSan,
       quality: finding.quality,
+      motif: finding.motif,
     };
   } catch {
     return null;
