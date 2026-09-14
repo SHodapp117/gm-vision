@@ -11,6 +11,7 @@ import {
   Gauge,
   BookOpen,
   Bot,
+  Crosshair,
   MessageSquareText,
   ShieldAlert,
   Lightbulb,
@@ -44,6 +45,14 @@ import {
   formatSanLine,
   type BookHint,
 } from "./game/openings";
+import { createIndexedDbStore } from "./chesscom/store";
+import {
+  buildNemesis,
+  phaseOfFen,
+  nemesisElo,
+  NEMESIS_MIN_ANALYZED,
+  type NemesisPlan,
+} from "./chesscom/nemesis";
 import {
   standardPosition,
   openingPosition,
@@ -330,6 +339,10 @@ interface ChessTrainerProps {
 type StartMode = "standard" | "opening" | "fen";
 const OPENING_DEPTHS = [3, 5, 7, 9] as const;
 
+/** Shared IndexedDB handle (same "gmvision" DB the Games tab writes to) — read
+ *  the player's analysed games to build the Nemesis bot. */
+const nemesisStore = createIndexedDbStore();
+
 export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrainerProps = {}) {
   const gameRef = useRef(new Chess());
   const [fen, setFen] = useState(gameRef.current.fen());
@@ -343,6 +356,15 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
   // pick a different opening to face it as your opponent's repertoire.
   const [botOpening, setBotOpening] = useState<string>("");
   const [started, setStarted] = useState(false);
+
+  // Nemesis — a bot built from your analysed games to hunt your weaknesses.
+  // When engaged it drives the bot's strength (stronger in your weak phase);
+  // manual color/strength edits dismiss it (see the setup handlers below).
+  const [nemesis, setNemesis] = useState<NemesisPlan | null>(null);
+  const [nemesisMsg, setNemesisMsg] = useState<string | null>(null);
+  const [nemesisBuilding, setNemesisBuilding] = useState(false);
+  const nemesisRef = useRef<NemesisPlan | null>(null);
+  nemesisRef.current = nemesis;
 
   // Start position — a standard game, N moves into the opening, or a pasted FEN.
   const [startMode, setStartMode] = useState<StartMode>("standard");
@@ -437,11 +459,19 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
       setStarted(true);
       setFenError(null);
       const colorWord = pos.playerColor === "w" ? "White" : "Black";
-      const guideNote =
-        (pos.source === "standard" || pos.source === "opening") && openingGuide
-          ? " Follow the book arrow to learn the main line."
-          : " Tactical Radar, Best Moves and the Vision layers are one click away.";
-      setCoach(`Playing ${pos.label} as ${colorWord}. Bot rated ${elo}.${guideNote}`);
+      const plan = nemesisRef.current;
+      if (plan) {
+        const phaseNote = plan.weakPhase
+          ? ` It plays ~${plan.baseElo}, ramping to ~${plan.baseElo + plan.phaseBoostElo} in the ${plan.weakPhase} — where your games say you crack. Prove it wrong.`
+          : ` It plays ~${plan.baseElo}, tuned to your record. Prove it wrong.`;
+        setCoach(`Nemesis engaged — you're ${colorWord}, your weaker side.${phaseNote}`);
+      } else {
+        const guideNote =
+          (pos.source === "standard" || pos.source === "opening") && openingGuide
+            ? " Follow the book arrow to learn the main line."
+            : " Tactical Radar, Best Moves and the Vision layers are one click away.";
+        setCoach(`Playing ${pos.label} as ${colorWord}. Bot rated ${elo}.${guideNote}`);
+      }
       syncState();
     },
     [elo, openingGuide, syncState]
@@ -467,6 +497,39 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
     startFromPosition(standardPosition(playerColor));
   }, [startMode, fenInput, opening, openingDepth, playerColor, startFromPosition]);
 
+  // Build the Nemesis: read the player's analysed games and derive a bot tuned
+  // to their weaknesses. Applies the plan's colour + calibrated strength to the
+  // setup; the bot's per-phase strength is applied at move time (see runBot).
+  const buildNemesisBot = useCallback(async () => {
+    setNemesisBuilding(true);
+    setNemesisMsg(null);
+    try {
+      const games = await nemesisStore.allGames();
+      const plan = buildNemesis(games);
+      if (!plan) {
+        const analyzed = games.filter((g) => g.analyzed && g.analysis).length;
+        setNemesis(null);
+        setNemesisMsg(
+          `Nemesis needs more than ${NEMESIS_MIN_ANALYZED} analysed games — you have ${analyzed}. Import and analyze more in the Games tab (Coach Report → “Analyze N games”).`
+        );
+        return;
+      }
+      setNemesis(plan);
+      setPlayerColor(plan.playerColor);
+      setElo(plan.baseElo);
+      setNemesisMsg(null);
+    } catch {
+      setNemesisMsg("Couldn't read your games. Import some in the Games tab first.");
+    } finally {
+      setNemesisBuilding(false);
+    }
+  }, []);
+
+  const dismissNemesis = useCallback(() => {
+    setNemesis(null);
+    setNemesisMsg(null);
+  }, []);
+
   // A position handed in from elsewhere (e.g. "Play from here" on a puzzle):
   // start it immediately, then tell the parent it's been consumed.
   useEffect(() => {
@@ -483,8 +546,13 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
   const runBot = useCallback(async () => {
     if (thinking) return;
     setThinking(true);
-    // The bot follows its own opening (falls back to yours when set to mirror).
-    const move = await getBotMove(gameRef.current.fen(), elo, botOpening || opening);
+    // Nemesis drives strength per-phase (tougher exactly where you're weak);
+    // otherwise the ELO slider. The bot follows its own opening (or yours when
+    // set to mirror).
+    const activeElo = nemesisRef.current
+      ? nemesisElo(nemesisRef.current, phaseOfFen(gameRef.current.fen()))
+      : elo;
+    const move = await getBotMove(gameRef.current.fen(), activeElo, botOpening || opening);
     if (move) {
       gameRef.current.move({ from: move.from, to: move.to, promotion: move.promotion });
       syncState();
@@ -1149,7 +1217,10 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
                 {(["w", "b"] as const).map((c) => (
                   <button
                     key={c}
-                    onClick={() => setPlayerColor(c)}
+                    onClick={() => {
+                      setPlayerColor(c);
+                      setNemesis(null); // a manual colour choice overrides the Nemesis plan
+                    }}
                     className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${
                       playerColor === c
                         ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300 shadow-inner"
@@ -1161,22 +1232,91 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
                 ))}
               </div>
 
-              {/* ELO slider */}
+              {/* ELO slider — driven by the Nemesis plan while it's engaged */}
               <label className="mb-1.5 flex items-center justify-between text-xs font-medium text-slate-400">
                 <span className="flex items-center gap-1.5">
                   <Gauge className="h-3.5 w-3.5" /> Bot ELO
                 </span>
-                <span className="font-mono text-emerald-300">{elo}</span>
+                <span className="font-mono text-emerald-300">
+                  {nemesis ? nemesis.baseElo : elo}
+                  {nemesis && nemesis.phaseBoostElo > 0 && nemesis.weakPhase && (
+                    <span className="text-rose-300"> → {nemesis.baseElo + nemesis.phaseBoostElo} in {nemesis.weakPhase}</span>
+                  )}
+                </span>
               </label>
               <input
                 type="range"
                 min={600}
                 max={3200}
                 step={50}
-                value={elo}
+                value={nemesis ? nemesis.baseElo : elo}
                 onChange={(e) => setElo(Number(e.target.value))}
-                className="mb-4 w-full cursor-pointer accent-emerald-500"
+                disabled={!!nemesis}
+                className="mb-2 w-full cursor-pointer accent-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
               />
+
+              {/* Nemesis — a bot built from your analysed games */}
+              {nemesis ? (
+                <section className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3.5">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5 text-sm font-semibold text-rose-200">
+                      <Crosshair className="h-4 w-4" /> Nemesis engaged
+                    </span>
+                    <button
+                      onClick={dismissNemesis}
+                      className="text-[11px] text-slate-400 transition-colors hover:text-slate-200"
+                    >
+                      dismiss
+                    </button>
+                  </div>
+                  <p className="mb-3 text-[11px] leading-relaxed text-rose-100/90">{nemesis.headline}</p>
+                  <div className="flex flex-col gap-1.5">
+                    {nemesis.targets.map((t) => (
+                      <div
+                        key={t.key}
+                        className="flex items-start gap-2 rounded-lg border border-slate-800/80 bg-slate-950/40 px-2.5 py-1.5"
+                      >
+                        <span
+                          className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                            t.forced
+                              ? "bg-rose-500/20 text-rose-200"
+                              : "bg-slate-700/40 text-slate-300"
+                          }`}
+                        >
+                          {t.forced ? "TARGETS" : "KNOWS"}
+                        </span>
+                        <span className="text-[11px] leading-relaxed text-slate-300">
+                          <span className="font-semibold text-slate-100">{t.label}.</span> {t.detail}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-2.5 text-[10px] leading-relaxed text-slate-500">
+                    <span className="font-semibold text-rose-300/90">TARGETS</span> = actively exploited ·{" "}
+                    <span className="font-semibold text-slate-400">KNOWS</span> = your weakness, shown as intel. Change
+                    colour or ELO to dismiss.
+                  </p>
+                </section>
+              ) : (
+                <>
+                  <button
+                    onClick={buildNemesisBot}
+                    disabled={nemesisBuilding}
+                    className="mb-2 flex w-full items-center justify-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2.5 text-sm font-semibold text-rose-200 transition-all hover:border-rose-400/60 hover:bg-rose-500/15 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    <Crosshair className="h-4 w-4" />
+                    {nemesisBuilding ? "Scouting your games…" : "Build my Nemesis bot"}
+                  </button>
+                  {nemesisMsg ? (
+                    <p className="mb-4 text-[11px] leading-relaxed text-amber-400/90">{nemesisMsg}</p>
+                  ) : (
+                    <p className="mb-4 text-[11px] leading-relaxed text-slate-500">
+                      A bot built from your analysed games ({NEMESIS_MIN_ANALYZED}+ needed) — it makes you play your
+                      weaker side and ramps up where you crumble.
+                    </p>
+                  )}
+                </>
+              )}
 
               {/* Opening: the line YOU are coached through */}
               <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-400">
