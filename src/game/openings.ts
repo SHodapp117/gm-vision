@@ -166,6 +166,49 @@ export function nextBookMove(game: Chess, openingName: string): BookHint | null 
 }
 
 /**
+ * The shared opening prefix (as SAN) of two openings' MAIN lines: the moves
+ * both lines play identically from the start before they diverge. Compared by
+ * resulting position (posKey), so a transposition still counts as shared.
+ *
+ * This is the honest "will I actually get coached?" signal when the bot follows
+ * a *different* opening than the one you're being guided through: coaching only
+ * survives while the real position stays in your book, which needs the bot's
+ * replies to match — i.e. while the two lines overlap. Beyond this prefix the
+ * bot is on its own line and the guide will usually fall silent.
+ */
+export function sharedOpeningPrefix(a: string, b: string): string[] {
+  const la = OPENING_LINES[a]?.[0];
+  const lb = OPENING_LINES[b]?.[0];
+  if (!la || !lb) return [];
+  const ga = new Chess();
+  const gb = new Chess();
+  const shared: string[] = [];
+  const len = Math.min(la.length, lb.length);
+  for (let i = 0; i < len; i++) {
+    let ma, mb;
+    try {
+      ma = ga.move(la[i]);
+      mb = gb.move(lb[i]);
+    } catch {
+      break;
+    }
+    if (!ma || !mb || posKey(ga.fen()) !== posKey(gb.fen())) break;
+    shared.push(ma.san);
+  }
+  return shared;
+}
+
+/** Format a SAN line with move numbers, e.g. ["e4","e5","Nf3"] → "1.e4 e5 2.Nf3". */
+export function formatSanLine(sans: string[]): string {
+  let out = "";
+  for (let i = 0; i < sans.length; i++) {
+    if (i % 2 === 0) out += `${i ? " " : ""}${i / 2 + 1}.${sans[i]}`;
+    else out += ` ${sans[i]}`;
+  }
+  return out;
+}
+
+/**
  * Replay an opening's MAIN line `fullMoves` full moves deep (2·fullMoves plies,
  * clamped to the line length) for mid-game training. Returns the resulting FEN
  * and the SAN history that produced it, or null if the opening is unknown.

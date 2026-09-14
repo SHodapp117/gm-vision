@@ -10,6 +10,7 @@ import {
   Sparkles,
   Gauge,
   BookOpen,
+  Bot,
   MessageSquareText,
   ShieldAlert,
   Lightbulb,
@@ -39,6 +40,8 @@ import {
   bookMovesAtFen,
   pickBookMove,
   nextBookMove,
+  sharedOpeningPrefix,
+  formatSanLine,
   type BookHint,
 } from "./game/openings";
 import {
@@ -335,7 +338,10 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
   // Setup / config
   const [playerColor, setPlayerColor] = useState<"w" | "b">("w");
   const [elo, setElo] = useState(1500);
-  const [opening, setOpening] = useState<keyof typeof OPENING_LINES>("Ruy Lopez");
+  const [opening, setOpening] = useState<keyof typeof OPENING_LINES>("Ruy Lopez"); // the line YOU are coached through
+  // What the BOT plays. "" = mirror your opening (rehearse it — today's default);
+  // pick a different opening to face it as your opponent's repertoire.
+  const [botOpening, setBotOpening] = useState<string>("");
   const [started, setStarted] = useState(false);
 
   // Start position — a standard game, N moves into the opening, or a pasted FEN.
@@ -381,6 +387,14 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
 
   const botColor = playerColor === "w" ? "b" : "w";
   const orientation = playerColor === "w" ? "white" : "black";
+
+  // When the bot plays a DIFFERENT opening than the one you're coached on, how
+  // far the two book lines agree before diverging — the honest "you'll be
+  // coached this far" signal. null while the bot mirrors your line.
+  const botOpeningOverlap = useMemo(
+    () => (botOpening && botOpening !== opening ? sharedOpeningPrefix(opening, botOpening) : null),
+    [opening, botOpening]
+  );
 
   // react-chessboard v4 only sets up its own resize-driven sizing once, at
   // mount, gated on the container already having a non-zero offsetWidth —
@@ -457,6 +471,9 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
   // start it immediately, then tell the parent it's been consumed.
   useEffect(() => {
     if (!initialPosition) return;
+    // A handoff carries no bot-repertoire intent — reset the bot to mirror so a
+    // stale explicit choice from a prior session can't misdirect it.
+    setBotOpening("");
     startFromPosition(initialPosition);
     onConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -466,7 +483,8 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
   const runBot = useCallback(async () => {
     if (thinking) return;
     setThinking(true);
-    const move = await getBotMove(gameRef.current.fen(), elo, opening);
+    // The bot follows its own opening (falls back to yours when set to mirror).
+    const move = await getBotMove(gameRef.current.fen(), elo, botOpening || opening);
     if (move) {
       gameRef.current.move({ from: move.from, to: move.to, promotion: move.promotion });
       syncState();
@@ -481,7 +499,7 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
       }
     }
     setThinking(false);
-  }, [thinking, elo, opening, playerColor, syncState]);
+  }, [thinking, elo, opening, botOpening, playerColor, syncState]);
 
   // Trigger the bot whenever it is its turn. Gated on `checkingMove` too — the
   // player's move is committed optimistically, so the bot must wait for the
@@ -1160,9 +1178,9 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
                 className="mb-4 w-full cursor-pointer accent-emerald-500"
               />
 
-              {/* Opening dropdown */}
+              {/* Opening: the line YOU are coached through */}
               <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-400">
-                <BookOpen className="h-3.5 w-3.5" /> Opening
+                <BookOpen className="h-3.5 w-3.5" /> Coach me on
               </label>
               <select
                 value={opening}
@@ -1175,6 +1193,37 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
                   </option>
                 ))}
               </select>
+
+              {/* Bot's opening — mirror yours (rehearse) or face a different line */}
+              <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-400">
+                <Bot className="h-3.5 w-3.5" /> Bot plays
+              </label>
+              <select
+                value={botOpening}
+                onChange={(e) => setBotOpening(e.target.value)}
+                className="mb-1.5 w-full rounded-lg border border-slate-800 bg-slate-800/60 px-3 py-2 text-sm text-slate-200 outline-none transition-colors focus:border-emerald-500/50"
+              >
+                <option value="">Mirror my line (rehearse)</option>
+                {Object.keys(OPENING_LINES).map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+              {botOpeningOverlap !== null &&
+                (botOpeningOverlap.length >= 2 ? (
+                  <p className="mb-4 text-[11px] leading-relaxed text-slate-500">
+                    Shared line:{" "}
+                    <span className="font-mono text-emerald-300">{formatSanLine(botOpeningOverlap)}</span> — you'll be
+                    coached this far, then the bot follows its own {botOpening} line and the guide goes quiet.
+                  </p>
+                ) : (
+                  <p className="mb-4 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-400/90">
+                    <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                    {opening} and {botOpening} diverge almost immediately — you'll be out of your book within a move.
+                    Pick a bot line that shares your first moves for a real rehearsal.
+                  </p>
+                ))}
 
               {/* Start position — standard, mid-opening, or a pasted FEN */}
               <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-400">
