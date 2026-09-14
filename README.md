@@ -2,7 +2,11 @@
 
 A modern, browser-based React chess training app that visualizes **board control** and corrects **blunders in real time** — built to train players from beginner to Grandmaster.
 
-![Tech](https://img.shields.io/badge/React-18-149eca) ![Vite](https://img.shields.io/badge/Vite-5-646cff) ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6) ![Tailwind](https://img.shields.io/badge/Tailwind-3-38bdf8)
+### ▶ Live app: **[shodapp117.github.io/gm-vision](https://shodapp117.github.io/gm-vision/)**
+
+Fully client-side — your imported games and analysis stay in your own browser (nothing is sent to a server).
+
+[![Live](https://img.shields.io/badge/live-shodapp117.github.io%2Fgm--vision-10b981)](https://shodapp117.github.io/gm-vision/) ![Tech](https://img.shields.io/badge/React-18-149eca) ![Vite](https://img.shields.io/badge/Vite-5-646cff) ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6) ![Tailwind](https://img.shields.io/badge/Tailwind-3-38bdf8)
 
 ## Features
 
