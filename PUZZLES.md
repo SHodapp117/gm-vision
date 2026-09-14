@@ -12,8 +12,9 @@ No raw downloaded file (`.csv.zst` or `.parquet`) is committed to this repo — 
 
 ## Files
 
-- `src/data/puzzles.json` — curated array of 5,005 puzzles (~905KB).
+- `src/data/puzzles.json` — curated array of 10,010 puzzles (~1.8MB).
 - `src/data/puzzles.ts` — typed loader (`Puzzle` interface, `puzzles: Puzzle[]`, plus `puzzlesByTheme()` / `puzzlesInRatingRange()` helpers).
+- `scripts/build-puzzles.mjs` — the (re)builder. Additive: keeps every puzzle already in `puzzles.json` and tops each rating band up to a target, deduping by id. See **Rebuilding / expanding** below.
 
 ## Fields kept (renamed, everything else dropped)
 
@@ -42,21 +43,21 @@ Getting this backwards (showing the raw FEN and asking for `moves[0]`) is a very
 
 ## Curation method
 
-- Balanced across 7 rating bands, target ~715 puzzles each (5,005 total):
+- Balanced across 7 rating bands, target ~1,430 puzzles each (10,010 total):
 
   | Band | Count |
   |------|-------|
-  | 600–999 | 715 |
-  | 1000–1249 | 715 |
-  | 1250–1499 | 715 |
-  | 1500–1749 | 715 |
-  | 1750–1999 | 715 |
-  | 2000–2299 | 715 |
-  | 2300+ | 715 |
-  | **Total** | **5,005** |
+  | 600–999 | 1,430 |
+  | 1000–1249 | 1,430 |
+  | 1250–1499 | 1,430 |
+  | 1500–1749 | 1,430 |
+  | 1750–1999 | 1,430 |
+  | 2000–2299 | 1,430 |
+  | 2300+ | 1,430 |
+  | **Total** | **10,010** |
 
-- Deduplicated by `PuzzleId` (all 5,005 ids are unique).
-- Sampling order: the Lichess/HuggingFace dataset is ordered by `PuzzleId` (a hash-like identifier), not by rating, game date, or theme — so reading sequentially from the start of the file gives an effectively random sample with respect to rating and theme. Bands were filled greedily in that scan order and the read stopped as soon as all 7 bands hit target.
+- Deduplicated by `PuzzleId` (all 10,010 ids are unique).
+- Sampling order: the Lichess/HuggingFace dataset is ordered by `PuzzleId` (a hash-like identifier), not by rating, game date, or theme — so a sequential scan is an effectively random sample with respect to rating and theme. Bands are filled greedily in scan order and the read stops once all 7 bands hit target. The original ~715/band came from the top of the dataset; the expansion to ~1,430/band scanned from a high offset (default 500,000) so the added puzzles don't overlap the original sample (dedup by id guards against overlap regardless).
 
 ## Theme coverage manifest (puzzle counts per theme, dataset may tag multiple themes per puzzle)
 
@@ -64,46 +65,49 @@ All of the explicitly-required tactical themes are present with solid sample siz
 
 | Theme | Count | | Theme | Count |
 |---|---|---|---|---|
-| fork | 624 | | mateIn1 | 520 |
-| pin | 340 | | mateIn2 | 557 |
-| skewer | 100 | | mateIn3 | 148 |
-| discoveredAttack | 256 | | mateIn4 | 20 |
-| doubleCheck | 31 | | mateIn5 | 1 |
-| backRankMate | 80 | | sacrifice | 429 |
-| hangingPiece | 178 | | deflection | 219 |
+| fork | 1207 | | mateIn1 | 1021 |
+| pin | 673 | | mateIn2 | 1130 |
+| skewer | 207 | | mateIn3 | 285 |
+| discoveredAttack | 527 | | sacrifice | 848 |
+| doubleCheck | 72 | | deflection | 443 |
+| backRankMate | 174 | | hangingPiece | 341 |
 
-Full breakdown of every theme tag present in the curated set (a puzzle can carry several tags, so these sum to more than 5,005):
+Full breakdown of the most common theme tags in the curated set (a puzzle can carry several tags, so these sum to more than 10,010):
 
 ```
-endgame 2503        long 1495           advancedPawn 333    zugzwang 65
-short 2416          mate 1246           rookEndgame 291     masterVsMaster 65
-middlegame 2277     master 727          quietMove 288       intermezzo 61
-crushing 2155       fork 624            discoveredAttack 256 trappedPiece 52
-advantage 1547      mateIn2 557         opening 225         operaMate 49
-veryLong 532        deflection 219      knightEndgame 47    queenRookEndgame 39
-oneMove 522         pawnEndgame 205     pillsburysMate 33   attackingF2F7 32
-mateIn1 520         exposedKing 181     doubleCheck 31       capturingDefender 26
-sacrifice 429       hangingPiece 178    smotheredMate 24     interference 23
-defensiveMove 397   mateIn3 148         mateIn4 20           equality 17
-kingsideAttack 372  promotion 123       epauletteMate 15     cornerMate 13
-pin 340             skewer 100          enPassant 13         hookMate 10
-                    discoveredCheck 100 collinearMove 9      xRayAttack 8
-                    clearance 88        morphysMate 7        arabianMate 7
-                    backRankMate 80     anastasiaMate 6      swallowstailMate 5
-                    bishopEndgame 78    castling 4           bodenMate 3
-                    queensideAttack 76  doubleBishopMate 3   vukovicMate 3
-                    queenEndgame 70     triangleMate 3       blindSwineMate 3
-                                        dovetailMate 2       killBoxMate 2
-                                        superGM 1            balestraMate 1
-                                        mateIn5 1            underPromotion 1
+endgame 4962        oneMove 1027        opening 430         intermezzo 129
+short 4904          mateIn1 1021        attraction 398      trappedPiece 101
+middlegame 4618     sacrifice 848       exposedKing 355     knightEndgame 98
+crushing 4293       defensiveMove 817   hangingPiece 341    operaMate 94
+advantage 3109      kingsideAttack 771  mateIn3 285         doubleCheck 72
+long 2923           advancedPawn 681    promotion 246      pillsburysMate 67
+mate 2501           pin 673             discoveredCheck 217 zugzwang 133
+master 1414         quietMove 561       skewer 207         masterVsMaster 129
+fork 1207           rookEndgame 551     backRankMate 174   queenEndgame 129
+mateIn2 1130        discoveredAttack 527 bishopEndgame 159
+veryLong 1077       deflection 443      clearance 146
 ```
 
-(Raw counts regenerated directly from the committed `src/data/puzzles.json` — see the curation script notes below if you need to reproduce or expand this set.)
+(Top tags; raw counts regenerated directly from the committed `src/data/puzzles.json`.)
 
-## Reproducing / expanding this dataset
+## Rebuilding / expanding this dataset
 
-The one-off curation script used to build this file is **not** committed (temporary tooling, deleted after use per this task's scope). To regenerate or pull a larger/different sample:
+The curation script **is committed** now: `scripts/build-puzzles.mjs`. It reads the
+same CC0 data through the HuggingFace **datasets-server** JSON `rows` API (no parquet
+tooling, no extra deps — just `fetch`), so it runs anywhere the network allows.
 
-1. `npm install hyparquet` (pure-JS parquet reader, supports HTTP range requests — no native deps).
-2. Use `asyncBufferFromUrl` + `parquetMetadataAsync` + `parquetReadObjects` against the HuggingFace shards at `https://huggingface.co/datasets/Lichess/chess-puzzles/resolve/main/data/train-0000{0,1,2}-of-00003.parquet`, reading row-group by row-group (only fetching the columns you need: `PuzzleId, FEN, Moves, Rating, Themes`) until your target bucket counts are full.
-3. If `lichess.org` is reachable in your environment, the more direct route is the original CSV: `https://database.lichess.org/lichess_db_puzzle.csv.zst`, streamed and decompressed incrementally with the pure-JS [`fzstd`](https://www.npmjs.com/package/fzstd) package (`new fzstd.Decompress(...)`, feeding it chunks from a streamed `curl`/`fetch` response) — do not buffer the whole ~300MB compressed / ~1GB+ decompressed CSV in memory.
+```bash
+node scripts/build-puzzles.mjs [targetPerBand] [startOffset]
+# defaults: 1430 per band (~10k total), scanning from offset 500000
+```
+
+It is **additive**: it keeps every puzzle already in `puzzles.json` and only fetches
+enough new rows to top each of the 7 rating bands up to `targetPerBand`, deduping by
+`PuzzleId`. So `node scripts/build-puzzles.mjs 2000` grows the set to ~14k without
+disturbing what's there. Rows are validated (FEN has 6 fields, ≥2 UCI moves,
+rating ≥ 600) and the output is sorted by id for stable diffs.
+
+If the datasets-server is unreachable, the same CC0 data lives at the
+[HuggingFace parquet shards](https://huggingface.co/datasets/Lichess/chess-puzzles)
+and, where `lichess.org` is reachable, the original
+`https://database.lichess.org/lichess_db_puzzle.csv.zst`.

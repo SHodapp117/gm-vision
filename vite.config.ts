@@ -14,8 +14,18 @@ export default defineConfig({
   base: process.env.BASE_PATH || "/",
   plugins: [react()],
   build: {
-    // The Puzzles chunk bundles the ~900KB curated puzzle dataset; it's
-    // code-split (lazy-loaded) so it never touches the initial load.
-    chunkSizeWarningLimit: 1000,
+    // The curated puzzle dataset (~1.8MB / ~510KB gzip for ~10k puzzles) is
+    // pulled into its OWN lazy chunk, separate from the Puzzles UI code, so it
+    // caches independently — editing the trainer never re-downloads the data,
+    // and the data never touches the initial load. The limit is raised past the
+    // data chunk's size since that heft is data-by-design, not un-split code.
+    chunkSizeWarningLimit: 2000,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("src/data/puzzles.json")) return "puzzles-data";
+        },
+      },
+    },
   },
 });
