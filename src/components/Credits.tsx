@@ -105,7 +105,7 @@ export default function Credits() {
         <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3.5">
           <SectionTitle icon={Database}>Puzzle data</SectionTitle>
           <p className="text-xs leading-relaxed text-slate-400">
-            The bundled ~10,000 curated puzzles come from the{" "}
+            The ~24,000 curated puzzles come from the{" "}
             <Link label="Lichess open puzzle database" href="https://database.lichess.org/" />,
             dedicated to the public domain under{" "}
             <Link

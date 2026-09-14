@@ -19,7 +19,7 @@ import {
   RefreshCw,
   Swords,
 } from "lucide-react";
-import { type Puzzle } from "./data/puzzles";
+import { loadPuzzles, type Puzzle } from "./data/puzzles";
 import { puzzlePosition, type TrainingPosition } from "./game/trainingPosition";
 import { createIndexedDbStore } from "./chesscom/store";
 import { generatePuzzles, type GeneratedPuzzle } from "./chesscom/generatePuzzles";
@@ -113,6 +113,10 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resultRecordedRef = useRef(false); // rating/streak update once per puzzle
   const didInitRef = useRef(false);
+
+  // The curated dataset is fetched (not bundled) — track its load so the board
+  // can show a loading/error state until the pool is ready.
+  const [dataState, setDataState] = useState<"loading" | "ready" | "error">("loading");
 
   const [puzzle, setPuzzle] = useState<Puzzle | null>(null);
   const [fen, setFen] = useState(gameRef.current.fen());
@@ -284,9 +288,25 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
     [loadMistakes, loadNextMistake, nextPuzzle]
   );
 
-  // First puzzle on mount (guarded against StrictMode double-invoke).
+  // Fetch the curated pool (it's a static asset, not bundled). StrictMode-safe:
+  // `loadPuzzles` caches its promise, so the double mount just resolves the
+  // cached result on the surviving mount and flips the state to ready.
   useEffect(() => {
-    if (didInitRef.current) return;
+    let mounted = true;
+    loadPuzzles()
+      .then(() => mounted && setDataState("ready"))
+      .catch(() => mounted && setDataState("error"));
+    return () => {
+      mounted = false;
+      clearTimer();
+    };
+  }, [clearTimer]);
+
+  // First puzzle, once the pool is loaded (guarded so it runs exactly once). "My
+  // mistakes" mode draws from IndexedDB, not the fetched pool, but we still wait
+  // for the pool so switching to Curated later is instant.
+  useEffect(() => {
+    if (dataState !== "ready" || didInitRef.current) return;
     didInitRef.current = true;
     if (startMode === "mistakes") {
       void chooseMode("mistakes");
@@ -295,8 +315,7 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
       nextPuzzle();
       void loadMistakes(); // populate the mistake count for the mode toggle
     }
-    return () => clearTimer();
-  }, [nextPuzzle, clearTimer, startMode, chooseMode, loadMistakes, onStartModeConsumed]);
+  }, [dataState, nextPuzzle, startMode, chooseMode, loadMistakes, onStartModeConsumed]);
 
   // Keep a ref to the current puzzle for use inside stable callbacks.
   const puzzleRef = useRef<Puzzle | null>(null);
@@ -670,7 +689,7 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
               style={status === "failed" ? { animation: "pt-shake 0.4s ease-in-out" } : undefined}
             >
               <div
-                className="min-w-0 flex-1 rounded-2xl border bg-slate-900/70 p-4 shadow-2xl shadow-black/40 transition-colors"
+                className="relative min-w-0 flex-1 rounded-2xl border bg-slate-900/70 p-4 shadow-2xl shadow-black/40 transition-colors"
                 style={{
                   borderColor:
                     flash === "good" ? SUCCESS : flash === "bad" ? FAILURE : "#1e293b",
@@ -694,6 +713,23 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
                     customLightSquareStyle={{ backgroundColor: "#c3ccda" }}
                   />
                 </div>
+                {dataState !== "ready" && (
+                  <div className="absolute inset-4 flex flex-col items-center justify-center gap-3 rounded-xl bg-slate-950/80 backdrop-blur-sm">
+                    {dataState === "loading" ? (
+                      <>
+                        <RefreshCw className="h-7 w-7 animate-spin text-emerald-400" />
+                        <p className="text-sm font-medium text-slate-300">Loading puzzles…</p>
+                      </>
+                    ) : (
+                      <>
+                        <X className="h-7 w-7 text-rose-400" />
+                        <p className="max-w-[80%] text-center text-sm text-slate-300">
+                          Couldn't load the puzzle set. Check your connection and reload.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 

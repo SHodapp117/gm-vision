@@ -18,7 +18,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const OUT = join(__dirname, "..", "src", "data", "puzzles.json");
+// Served as a static asset (fetched at runtime, not bundled) — lives in public/.
+const OUT = join(__dirname, "..", "public", "data", "puzzles.json");
 
 const BANDS = [
   [600, 999],
@@ -42,20 +43,25 @@ const BASE =
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Fetch one page of rows with retry/backoff; returns [] on give-up. */
+// A page fetch resolves to one of these — a transient give-up is deliberately
+// NOT the same as a genuine end-of-split, so a flaky endpoint can't be
+// misread as "no more data".
+const END = Symbol("end"); // HTTP 404 → past the end of the split
+const FAILED = Symbol("failed"); // retries exhausted (network/5xx) — transient
+
+/** Fetch one page of rows; returns an array, END (404), or FAILED (gave up). */
 async function fetchPage(offset) {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const res = await fetch(`${BASE}&offset=${offset}&length=${PAGE}`);
       if (res.ok) return (await res.json()).rows.map((r) => r.row);
-      if (res.status === 404) return []; // past the end of the split
+      if (res.status === 404) return END; // genuine end of the split
     } catch {
       /* network blip — retry */
     }
-    await sleep(400 * (attempt + 1));
+    await sleep(500 * (attempt + 1));
   }
-  console.warn(`  ! gave up on offset ${offset}`);
-  return [];
+  return FAILED;
 }
 
 /** Map a raw Lichess row to the app's compact Puzzle shape, or null if invalid. */
@@ -85,16 +91,26 @@ async function main() {
   let offset = START_OFFSET;
   let scanned = 0;
   let added = 0;
+  let reachedEnd = false;
+  let deadBatches = 0; // consecutive batches where every page failed
 
-  while (!bandsFull() && scanned < MAX_SCAN) {
+  while (!bandsFull() && scanned < MAX_SCAN && !reachedEnd) {
     const batch = await Promise.all(
       Array.from({ length: CONCURRENCY }, (_, i) => fetchPage(offset + i * PAGE))
     );
     offset += CONCURRENCY * PAGE;
+
     let batchRows = 0;
-    for (const rows of batch) {
-      batchRows += rows.length;
-      for (const row of rows) {
+    let anyOk = false;
+    for (const page of batch) {
+      if (page === END) {
+        reachedEnd = true;
+        continue;
+      }
+      if (page === FAILED) continue; // transient — skip, do NOT treat as end
+      anyOk = true;
+      batchRows += page.length;
+      for (const row of page) {
         const p = toPuzzle(row);
         if (!p || byId.has(p.id)) continue;
         const b = bandOf(p.rating);
@@ -105,14 +121,26 @@ async function main() {
       }
     }
     scanned += batchRows;
-    if (batchRows === 0) {
-      console.log("Reached end of dataset.");
-      break;
+
+    // A whole batch of failures is a transient outage, not the end. Back off and
+    // retry the SAME offsets a few times before giving up entirely.
+    if (!anyOk && !reachedEnd) {
+      deadBatches++;
+      if (deadBatches >= 6) {
+        console.warn("  ! endpoint unreachable for too long — stopping early.");
+        break;
+      }
+      offset -= CONCURRENCY * PAGE; // rewind and retry these pages
+      await sleep(2000 * deadBatches);
+      continue;
     }
+    deadBatches = 0;
+
     if (scanned % 3000 < CONCURRENCY * PAGE) {
       console.log(`  scanned ~${scanned}, added ${added}, bands: ${perBand.join("/")}`);
     }
   }
+  if (reachedEnd) console.log("Reached the genuine end of the dataset split.");
 
   // Sort by id — the dataset's natural (hash-like) order, matching the loader's
   // documented convention and keeping diffs stable across re-runs.

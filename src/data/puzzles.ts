@@ -1,11 +1,18 @@
-// Typed loader for the curated Lichess CC0 puzzle subset.
+// Runtime loader for the curated Lichess CC0 puzzle set.
 //
-// See PUZZLES.md (repo root) for the full source, license, and field
-// documentation — including the important convention that `moves[0]` is
-// the opponent's "setup" move that must be played BEFORE the solver's
-// first move.
-
-import rawPuzzles from './puzzles.json';
+// The dataset (~25k puzzles, several MB) is NOT bundled into the JS — it's
+// served as a static asset from `public/data/puzzles.json` and fetched on
+// demand the first time the Puzzles tab needs it, so it never weighs down the
+// app bundle and is cached by the browser after the first load.
+//
+// `puzzles` is a module-level array that starts empty and is filled in place by
+// `loadPuzzles()`. Callers that run after the load (all UI interactions do) see
+// the populated array; anything that might run earlier should `await
+// loadPuzzles()` first (the Puzzles tab does this on mount).
+//
+// See PUZZLES.md (repo root) for the source, license, and field convention —
+// notably that `moves[0]` is the opponent's setup move, played BEFORE the
+// solver's first move.
 
 /** A single tactics puzzle curated from the Lichess open puzzle database. */
 export interface Puzzle {
@@ -30,14 +37,49 @@ export interface Puzzle {
   themes: string[];
 }
 
-export const puzzles: Puzzle[] = rawPuzzles as Puzzle[];
+/**
+ * The loaded puzzle pool. Empty until `loadPuzzles()` resolves, then filled in
+ * place (same array reference throughout, so importers never hold a stale copy).
+ */
+export const puzzles: Puzzle[] = [];
 
-/** Returns all puzzles tagged with the given theme (case-sensitive, exact match). */
+/** Where the static dataset lives — respects the deploy base path (e.g. /gm-vision/). */
+const PUZZLES_URL = `${import.meta.env.BASE_URL}data/puzzles.json`;
+
+let loadPromise: Promise<Puzzle[]> | null = null;
+
+/**
+ * Fetch and cache the puzzle dataset (idempotent — concurrent callers share one
+ * request, and a completed load resolves immediately). Fills `puzzles` in place
+ * and returns it. Throws if the asset can't be fetched or parsed.
+ */
+export function loadPuzzles(): Promise<Puzzle[]> {
+  if (loadPromise) return loadPromise;
+  loadPromise = (async () => {
+    const res = await fetch(PUZZLES_URL);
+    if (!res.ok) throw new Error(`Failed to load puzzles (${res.status})`);
+    const data = (await res.json()) as Puzzle[];
+    puzzles.length = 0;
+    puzzles.push(...data);
+    return puzzles;
+  })().catch((err) => {
+    loadPromise = null; // allow a retry on transient failure
+    throw err;
+  });
+  return loadPromise;
+}
+
+/** True once the dataset has finished loading. */
+export function puzzlesLoaded(): boolean {
+  return puzzles.length > 0;
+}
+
+/** Returns all loaded puzzles tagged with the given theme (exact, case-sensitive). */
 export function puzzlesByTheme(theme: string): Puzzle[] {
   return puzzles.filter((p) => p.themes.includes(theme));
 }
 
-/** Returns all puzzles whose rating falls within [min, max] inclusive. */
+/** Returns all loaded puzzles whose rating falls within [min, max] inclusive. */
 export function puzzlesInRatingRange(min: number, max: number): Puzzle[] {
   return puzzles.filter((p) => p.rating >= min && p.rating <= max);
 }
