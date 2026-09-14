@@ -18,6 +18,7 @@ import {
   ChevronRight,
   RefreshCw,
   Swords,
+  Timer,
 } from "lucide-react";
 import { loadPuzzles, type Puzzle } from "./data/puzzles";
 import { puzzlePosition, type TrainingPosition } from "./game/trainingPosition";
@@ -43,6 +44,7 @@ import {
   RATING_BANDS,
   type RatingBand,
 } from "./puzzles/session";
+import { puzzleSeconds, scorePoints, MAX_POINTS, SOLVE_FLOOR } from "./puzzles/scoring";
 
 /* ------------------------------------------------------------------ */
 /*  Palette — matches the app's brand language.                        */
@@ -121,9 +123,21 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
   const [puzzle, setPuzzle] = useState<Puzzle | null>(null);
   const [fen, setFen] = useState(gameRef.current.fen());
   const [status, setStatus] = useState<Status>("opponent");
+  const statusRef = useRef<Status>(status); // for timer callbacks that outlive a render
+  statusRef.current = status;
   const [flash, setFlash] = useState<"good" | "bad" | null>(null);
   const [hintLevel, setHintLevel] = useState(0);
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
+
+  // --- Countdown timer + per-session scoring ------------------------
+  const [timeLeftMs, setTimeLeftMs] = useState(0);
+  const durationMsRef = useRef(30000); // total clock for the current puzzle
+  const deadlineRef = useRef(0); // epoch ms when the clock hits zero
+  const countdownIvRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [sessionPoints, setSessionPoints] = useState(0); // this-session total (ephemeral)
+  const [sessionCount, setSessionCount] = useState(0); // puzzles scored this session
+  const [lastPoints, setLastPoints] = useState<number | null>(null); // last puzzle's score
+  const [failedByTime, setFailedByTime] = useState(false); // last fail was a timeout
 
   // --- Progress + filters -------------------------------------------
   const [progress, setProgress] = useState<TacticsProgress>(() => getProgress());
@@ -175,6 +189,16 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
     }
   }, []);
 
+  // Stop the countdown interval. Ref-only, so it's identity-stable and can sit
+  // in other callbacks' deps without widening them (keeps the deadline from
+  // ever being reset mid-puzzle by an effect re-subscribing).
+  const stopCountdown = useCallback(() => {
+    if (countdownIvRef.current) {
+      clearInterval(countdownIvRef.current);
+      countdownIvRef.current = null;
+    }
+  }, []);
+
   const currentBand = useCallback((): RatingBand | null => {
     return RATING_BANDS.find((b) => b.label === bandLabel) ?? null;
   }, [bandLabel]);
@@ -189,7 +213,11 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
       movesRef.current = p.moves.split(" ").filter(Boolean);
       expectedIndexRef.current = 0;
       solverColorRef.current = gameRef.current.turn() === "w" ? "b" : "w";
-      if (!isRetry) resultRecordedRef.current = false;
+      if (!isRetry) {
+        resultRecordedRef.current = false;
+        setLastPoints(null); // clear the previous puzzle's score
+        setFailedByTime(false);
+      }
 
       // `token` is bumped so any timer still pending from a prior puzzle
       // (opponent reply, etc.) is invalidated even though we don't schedule
@@ -326,6 +354,17 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
     (solved: boolean) => {
       if (resultRecordedRef.current || !puzzleRef.current) return;
       resultRecordedRef.current = true;
+      stopCountdown();
+
+      // Score this puzzle out of 10 from the fraction of the clock left at the
+      // moment it was resolved (0 for a miss/timeout), and add it to the session.
+      const remainMs = Math.max(0, deadlineRef.current - Date.now());
+      const frac = durationMsRef.current > 0 ? remainMs / durationMsRef.current : 0;
+      const pts = scorePoints(solved, frac);
+      setLastPoints(pts);
+      setSessionPoints((p) => p + pts);
+      setSessionCount((n) => n + 1);
+
       const { progress: next, delta } = updateProgress(puzzleRef.current.rating, solved);
       setProgress(next);
       setLastDelta(delta);
@@ -338,13 +377,54 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
         refreshReviewSummary();
       }
     },
-    [refreshReviewSummary]
+    [refreshReviewSummary, stopCountdown]
   );
 
   const flashThen = useCallback((kind: "good" | "bad") => {
     setFlash(kind);
     setTimeout(() => setFlash(null), 550);
   }, []);
+
+  // Clock ran out — score it as a first-try miss and reveal the answer. Reads
+  // status via a ref and depends only on stable callbacks, so its identity never
+  // changes and the countdown effect below can't be forced to restart mid-solve.
+  const failByTimeout = useCallback(() => {
+    stopCountdown();
+    if (statusRef.current !== "solving") return;
+    setFailedByTime(true);
+    recordResult(false);
+    setStatus("failed");
+    setHintLevel(0);
+    setSelectedSquare(null);
+    flashThen("bad");
+  }, [recordResult, stopCountdown, flashThen]);
+
+  // Run the countdown while solving. It starts once when the puzzle enters the
+  // "solving" phase (status doesn't change again until solved/failed, so the
+  // deadline is never reset mid-puzzle), and is skipped on a retry — an already-
+  // scored puzzle is untimed practice.
+  useEffect(() => {
+    if (status !== "solving" || resultRecordedRef.current) {
+      stopCountdown();
+      return;
+    }
+    const rating = puzzleRef.current?.rating ?? 1200;
+    const durMs = puzzleSeconds(rating) * 1000;
+    durationMsRef.current = durMs;
+    deadlineRef.current = Date.now() + durMs;
+    setTimeLeftMs(durMs);
+    stopCountdown();
+    countdownIvRef.current = setInterval(() => {
+      const remain = deadlineRef.current - Date.now();
+      if (remain <= 0) {
+        setTimeLeftMs(0);
+        failByTimeout();
+      } else {
+        setTimeLeftMs(remain);
+      }
+    }, 100);
+    return () => stopCountdown();
+  }, [status, failByTimeout, stopCountdown]);
 
   /* ---- Schedule the forced opponent reply -------------------------- */
   const scheduleOpponentReply = useCallback(() => {
@@ -383,6 +463,7 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
 
       if (userUci !== expected) {
         // Wrong — record the failure (first attempt only), reveal the answer.
+        setFailedByTime(false);
         recordResult(false);
         setStatus("failed");
         setHintLevel(0);
@@ -632,6 +713,15 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
       ? "Solved!"
       : "Not quite — here's the winning idea.";
 
+  // Countdown display + lifetime/session scoring derived values.
+  const timed = status === "solving" && !resultRecordedRef.current;
+  const timeLeftSec = Math.ceil(timeLeftMs / 1000);
+  const timePct = durationMsRef.current > 0 ? Math.max(0, Math.min(100, (timeLeftMs / durationMsRef.current) * 100)) : 0;
+  const timerColor = timePct > 50 ? SUCCESS : timePct > 25 ? HINT : FAILURE;
+  const attempts = progress.solved + progress.failed;
+  const winRate = attempts > 0 ? Math.round((progress.solved / attempts) * 100) : 0;
+  const sessionAvg = sessionCount > 0 ? (sessionPoints / sessionCount).toFixed(1) : "0.0";
+
   return (
     <div className="min-h-screen w-full bg-slate-950 font-sans text-slate-100 antialiased">
       <style>{`
@@ -684,6 +774,32 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
           {/* -------- Board column -------- */}
           <div className="flex flex-col items-center">
+            {/* Countdown timer — scores each puzzle out of 10 by time left */}
+            {dataState === "ready" && puzzle && (
+              <div className="mb-3 w-full max-w-[560px]">
+                <div className="flex items-center gap-3">
+                  <div
+                    className="flex items-center gap-1.5 font-mono text-sm font-semibold tabular-nums"
+                    style={{ color: timed ? timerColor : "#64748b" }}
+                  >
+                    <Timer className="h-4 w-4" />
+                    {timed ? `${timeLeftSec}s` : status === "solving" ? "practice" : "—"}
+                  </div>
+                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800">
+                    <div
+                      className="h-full rounded-full transition-[width] duration-100 ease-linear"
+                      style={{
+                        width: `${timed ? timePct : status === "solving" ? 100 : 0}%`,
+                        background: timed ? timerColor : "#475569",
+                      }}
+                    />
+                  </div>
+                  <div className="w-16 shrink-0 text-right text-[11px] text-slate-500">
+                    {timed ? `up to ${scorePoints(true, timePct / 100)} pts` : "untimed"}
+                  </div>
+                </div>
+              </div>
+            )}
             <div
               className="w-full max-w-[560px]"
               style={status === "failed" ? { animation: "pt-shake 0.4s ease-in-out" } : undefined}
@@ -897,20 +1013,40 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
                     <Trophy className="h-3 w-3" /> best {progress.bestStreak}
                   </div>
                 </div>
-                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-center">
-                  <div className="text-[11px] font-medium text-slate-400">Solved / Failed</div>
-                  <div className="mt-1 font-mono text-2xl font-semibold text-slate-100">
-                    <span style={{ color: SUCCESS }}>{progress.solved}</span>
-                    <span className="text-slate-600"> / </span>
-                    <span style={{ color: FAILURE }}>{progress.failed}</span>
+                <div
+                  className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-center"
+                  title="First-try solves ÷ first-try attempts, lifetime. Timeouts count as a miss."
+                >
+                  <div className="text-[11px] font-medium text-slate-400">Win rate</div>
+                  <div className="mt-1 font-mono text-2xl font-semibold" style={{ color: SUCCESS }}>
+                    {winRate}%
                   </div>
-                  <button
-                    onClick={handleResetProgress}
-                    className="mt-0.5 inline-flex items-center gap-1 text-[10px] text-slate-500 transition-colors hover:text-slate-300"
-                  >
-                    <RefreshCw className="h-2.5 w-2.5" /> reset
-                  </button>
+                  <div className="text-[10px] text-slate-500">{progress.solved} solved · lifetime</div>
                 </div>
+              </div>
+              {/* Per-session scoring — points out of 10 per puzzle */}
+              <div className="mt-3 flex items-center justify-between rounded-xl border border-indigo-500/25 bg-indigo-500/5 px-3.5 py-2.5">
+                <div className="flex items-center gap-2 text-xs text-slate-300">
+                  <Timer className="h-3.5 w-3.5 text-indigo-300" />
+                  <span>
+                    This session:{" "}
+                    <span className="font-mono font-semibold text-indigo-200">{sessionPoints}</span> pts
+                    {sessionCount > 0 && (
+                      <span className="text-slate-500">
+                        {" "}
+                        · {sessionCount} puzzle{sessionCount === 1 ? "" : "s"} · avg{" "}
+                        <span className="font-mono text-slate-300">{sessionAvg}</span>/10
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <button
+                  onClick={handleResetProgress}
+                  title="Reset lifetime rating, streak & win rate"
+                  className="inline-flex shrink-0 items-center gap-1 text-[10px] text-slate-500 transition-colors hover:text-slate-300"
+                >
+                  <RefreshCw className="h-2.5 w-2.5" /> reset lifetime
+                </button>
               </div>
             </section>
 
@@ -927,12 +1063,19 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
                   >
                     <Check className="h-6 w-6" style={{ color: SUCCESS }} />
                   </div>
-                  <div>
-                    <p className="text-sm font-semibold" style={{ color: SUCCESS }}>
-                      Puzzle solved!
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center justify-between gap-2 text-sm font-semibold" style={{ color: SUCCESS }}>
+                      <span>Puzzle solved!</span>
+                      {lastPoints !== null && (
+                        <span className="font-mono text-base">+{lastPoints}<span className="text-xs text-slate-400">/{MAX_POINTS}</span></span>
+                      )}
                     </p>
                     <p className="text-xs text-slate-400">
-                      Nicely calculated. Ready for the next one?
+                      {lastPoints !== null && lastPoints >= MAX_POINTS
+                        ? "Lightning fast — full marks."
+                        : lastPoints !== null && lastPoints <= SOLVE_FLOOR
+                        ? "Correct — beat the clock next time for more points."
+                        : "Nicely calculated. Ready for the next one?"}
                     </p>
                   </div>
                 </div>
@@ -948,12 +1091,15 @@ export default function PuzzleTrainer({ onPlayFromPuzzle, startMode, onStartMode
                   >
                     <X className="h-6 w-6" style={{ color: FAILURE }} />
                   </div>
-                  <div>
-                    <p className="text-sm font-semibold" style={{ color: FAILURE }}>
-                      Incorrect
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center justify-between gap-2 text-sm font-semibold" style={{ color: FAILURE }}>
+                      <span>{failedByTime ? "Time's up!" : "Incorrect"}</span>
+                      <span className="font-mono text-base">0<span className="text-xs text-slate-400">/{MAX_POINTS}</span></span>
                     </p>
                     <p className="text-xs text-slate-400">
-                      The winning move is shown in green. Retry it or move on.
+                      {failedByTime
+                        ? "The clock ran out — the winning move is shown in green. Retry it (untimed) or move on."
+                        : "The winning move is shown in green. Retry it or move on."}
                     </p>
                   </div>
                 </div>
