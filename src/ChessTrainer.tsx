@@ -1210,7 +1210,13 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
                   </option>
                 ))}
               </select>
-              {botOpeningOverlap !== null &&
+              {botOpeningOverlap !== null && startMode === "opening" ? (
+                <p className="mb-4 text-[11px] leading-relaxed text-slate-500">
+                  You start seeded inside your {opening} line, so the bot is already off its {botOpening} book and
+                  plays the engine from move one.
+                </p>
+              ) : (
+                botOpeningOverlap !== null &&
                 (botOpeningOverlap.length >= 2 ? (
                   <p className="mb-4 text-[11px] leading-relaxed text-slate-500">
                     Shared line:{" "}
@@ -1223,7 +1229,7 @@ export default function ChessTrainer({ initialPosition, onConsumed }: ChessTrain
                     {opening} and {botOpening} diverge almost immediately — you'll be out of your book within a move.
                     Pick a bot line that shares your first moves for a real rehearsal.
                   </p>
-                ))}
+                )))}
 
               {/* Start position — standard, mid-opening, or a pasted FEN */}
               <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-400">
